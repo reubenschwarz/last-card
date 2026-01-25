@@ -19,7 +19,6 @@ import {
   nextTurn,
   confirmHandoff,
   declareLastCard,
-  canDeclareLastCard,
   getTopCard,
   getTargetSuit,
   getTargetRank,
@@ -45,16 +44,13 @@ interface GameStore {
   // Game actions
   playSelectedCards: (chosenSuit?: Suit) => void;
   drawCard: () => void;
-  endTurn: () => void;
   confirmHandoff: () => void;
   declareLastCard: () => void;
 
   // Computed helpers
   getCurrentPlayer: () => { id: number; hand: Card[] } | null;
-  getOpponentCardCount: () => number;
   getLegalPlays: () => LegalPlay[];
   isSelectionLegal: () => boolean;
-  canDeclareLastCard: () => boolean;
   needsSuitChoice: () => boolean;
   getTopCard: () => Card | null;
   getTargetSuit: () => Suit | null;
@@ -128,7 +124,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
     };
 
     if (isPlayLegal(gameState, gameState.currentPlayerIndex, play)) {
-      const newState = applyPlay(gameState, play);
+      let newState = applyPlay(gameState, play);
+
+      // Auto-end turn after playing (unless game is over)
+      if (newState.winner === null) {
+        newState = nextTurn(newState);
+      }
+
       set({
         gameState: newState,
         selectedCards: [],
@@ -152,18 +154,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       newState = applyVoluntaryDraw(gameState);
     }
 
-    set({
-      gameState: newState,
-      selectedCards: [],
-      playOrder: [],
-    });
-  },
+    // Auto-end turn after drawing
+    newState = nextTurn(newState);
 
-  endTurn: () => {
-    const { gameState } = get();
-    if (!gameState) return;
-
-    const newState = nextTurn(gameState);
     set({
       gameState: newState,
       selectedCards: [],
@@ -195,15 +188,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     return { id: player.id, hand: player.hand };
   },
 
-  getOpponentCardCount: () => {
-    const { gameState } = get();
-    if (!gameState) return 0;
-
-    // Get the other player's card count (for 2-player game)
-    const opponentIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length;
-    return gameState.players[opponentIndex].hand.length;
-  },
-
   getLegalPlays: () => {
     const { gameState } = get();
     if (!gameState) return [];
@@ -226,12 +210,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     return isPlayLegal(gameState, gameState.currentPlayerIndex, { cards: playOrder });
-  },
-
-  canDeclareLastCard: () => {
-    const { gameState, playOrder } = get();
-    if (!gameState || playOrder.length === 0) return false;
-    return canDeclareLastCard(gameState, playOrder);
   },
 
   needsSuitChoice: () => {

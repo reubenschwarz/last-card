@@ -7,6 +7,7 @@ interface CardProps {
   faceDown?: boolean;
   selected?: boolean;
   selectable?: boolean;
+  magnified?: boolean;
   onClick?: () => void;
   size?: "small" | "medium" | "large";
   className?: string;
@@ -23,6 +24,7 @@ export function Card({
   faceDown = false,
   selected = false,
   selectable = false,
+  magnified = false,
   onClick,
   size = "medium",
   className = "",
@@ -41,7 +43,8 @@ export function Card({
     flex flex-col items-center justify-center
     font-bold transition-all duration-150
     ${selected ? "-translate-y-3 border-yellow-400 shadow-lg shadow-yellow-400/50" : "border-gray-300"}
-    ${selectable && !faceDown ? "cursor-pointer hover:-translate-y-1 hover:shadow-md" : ""}
+    ${magnified && !selected ? "scale-125 -translate-y-4 shadow-xl" : ""}
+    ${selectable && !faceDown ? "cursor-pointer" : ""}
     ${faceDown ? "cursor-default" : ""}
   `;
 

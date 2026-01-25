@@ -49,19 +49,23 @@ export function initializeGame(
   const drawPile = deck;
   const discardPile = [firstCard];
 
-  // Determine initial pending effects based on the first card
-  const pendingEffects = getEffectsFromCard(firstCard);
+  // First card has NO special effects - player plays normally
+  // (no forced draw from 2/5, no skip from 10, ace uses its own suit)
+  const pendingEffects: PendingEffects = {
+    forcedDrawCount: 0,
+    skipNextPlayer: false,
+  };
 
   return {
     players,
     currentPlayerIndex: 0,
     drawPile,
     discardPile,
-    chosenSuit: null, // No suit override initially (even if first card is Ace)
+    chosenSuit: null, // No suit override initially - ace uses its own suit
     pendingEffects,
     turnPhase: "waiting", // Start in waiting phase for hotseat
     winner: null,
-    lastPlayWasSpecial: isSpecialCard(firstCard),
+    lastPlayWasSpecial: false, // First card doesn't count as special play
   };
 }
 
@@ -91,30 +95,6 @@ export function getTargetRank(state: GameState): Rank {
  */
 export function isSpecialCard(card: Card): boolean {
   return card.rank === "2" || card.rank === "5" || card.rank === "10";
-}
-
-/**
- * Get pending effects from a card
- */
-function getEffectsFromCard(card: Card): PendingEffects {
-  const effects: PendingEffects = {
-    forcedDrawCount: 0,
-    skipNextPlayer: false,
-  };
-
-  switch (card.rank) {
-    case "2":
-      effects.forcedDrawCount = 2;
-      break;
-    case "5":
-      effects.forcedDrawCount = 5;
-      break;
-    case "10":
-      effects.skipNextPlayer = true;
-      break;
-  }
-
-  return effects;
 }
 
 /**

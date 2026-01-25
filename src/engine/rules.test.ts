@@ -791,13 +791,17 @@ describe("Edge Cases", () => {
     expect(state.players[0].hand.length).toBe(1); // No cards to draw
   });
 
-  it("should handle game initialization with special first card", () => {
-    // Test that if the first card is a 2, 5, or 10, the effects are applied
-    const state2 = createTestState({
-      discardPile: [card("2", "diamonds")],
-      pendingEffects: { forcedDrawCount: 2, skipNextPlayer: false },
-      turnPhase: "playing",
-    });
-    expect(state2.pendingEffects.forcedDrawCount).toBe(2);
+  it("should NOT apply special effects from the first card", () => {
+    // When the game starts, the first card should have NO special effects
+    // - 2/5 should not force a draw
+    // - 10 should not skip
+    // - Ace should use its own suit (no override)
+    const state = initializeGame(2, createSeededRng(99999));
+
+    // Regardless of the first card, there should be no pending effects
+    expect(state.pendingEffects.forcedDrawCount).toBe(0);
+    expect(state.pendingEffects.skipNextPlayer).toBe(false);
+    expect(state.chosenSuit).toBeNull();
+    expect(state.lastPlayWasSpecial).toBe(false);
   });
 });

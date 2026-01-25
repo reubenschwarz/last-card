@@ -8,7 +8,7 @@ import { PlayArea } from "./PlayArea";
 import { OrderStrip } from "./OrderStrip";
 import { SuitChooser } from "./SuitChooser";
 import { HandoffScreen } from "./HandoffScreen";
-import { GameControls } from "./GameControls";
+import { GameControls, LastCardButton } from "./GameControls";
 import { StatusBar } from "./StatusBar";
 import { WinScreen } from "./WinScreen";
 
@@ -25,12 +25,10 @@ export function GameBoard() {
     reorderPlayCard,
     playSelectedCards,
     drawCard,
-    endTurn,
     confirmHandoff,
     declareLastCard,
     getCurrentPlayer,
     isSelectionLegal,
-    canDeclareLastCard,
     getTopCard,
     getTargetSuit,
     getTargetRank,
@@ -77,16 +75,15 @@ export function GameBoard() {
 
   // Game over
   if (gameState.winner !== null) {
-    return <WinScreen winner={gameState.winner} onPlayAgain={() => startGame(gameState.players.length)} />;
+    return (
+      <WinScreen winner={gameState.winner} onPlayAgain={() => startGame(gameState.players.length)} />
+    );
   }
 
   // Handoff screen
   if (gameState.turnPhase === "waiting") {
     return (
-      <HandoffScreen
-        playerNumber={gameState.currentPlayerIndex + 1}
-        onConfirm={confirmHandoff}
-      />
+      <HandoffScreen playerNumber={gameState.currentPlayerIndex + 1} onConfirm={confirmHandoff} />
     );
   }
 
@@ -94,10 +91,7 @@ export function GameBoard() {
   if (pendingSuitChoice) {
     return (
       <div className="relative flex min-h-screen flex-col bg-felt">
-        <SuitChooser
-          onChoose={(suit: Suit) => playSelectedCards(suit)}
-          onCancel={clearSelection}
-        />
+        <SuitChooser onChoose={(suit: Suit) => playSelectedCards(suit)} onCancel={clearSelection} />
         {renderGameContent()}
       </div>
     );
@@ -112,8 +106,6 @@ export function GameBoard() {
     const canDrawCard =
       (gameState.turnPhase === "playing" || gameState.turnPhase === "must-draw") &&
       (gameState.drawPile.length > 0 || gameState.discardPile.length > 1);
-    const canEnd = gameState.turnPhase === "can-end";
-    const canDeclare = canDeclareLastCard() && gameState.turnPhase === "playing";
 
     // Get opponent info - for 2 player game, just show the other player
     // For 3-4 players, show all opponents
@@ -133,7 +125,7 @@ export function GameBoard() {
         </div>
 
         {/* Main game area */}
-        <div className="flex flex-1 flex-col">
+        <div className="relative flex flex-1 flex-col">
           {/* Opponent area (top) */}
           <div className="flex justify-center gap-8 py-6">
             {opponents.map((opponent) => (
@@ -169,16 +161,11 @@ export function GameBoard() {
             <GameControls
               canPlay={canPlayCards}
               canDraw={canDrawCard}
-              canEndTurn={canEnd}
-              canDeclareLastCard={canDeclare}
               mustDraw={isMustDraw}
               forcedDrawCount={gameState.pendingEffects.forcedDrawCount}
               hasLastCardPenalty={currentPlayerState.lastCardPenalty}
-              hasDeclaredLastCard={currentPlayerState.declaredLastCard}
               onPlay={() => playSelectedCards()}
               onDraw={drawCard}
-              onEndTurn={endTurn}
-              onDeclareLastCard={declareLastCard}
             />
           </div>
 
@@ -192,7 +179,15 @@ export function GameBoard() {
               selectedCards={selectedCards}
               onSelectCard={selectCard}
               onDeselectCard={deselectCard}
-              disabled={gameState.turnPhase === "must-draw" || gameState.turnPhase === "can-end"}
+              disabled={gameState.turnPhase === "must-draw"}
+            />
+          </div>
+
+          {/* Unobtrusive "Last Card" button - bottom right corner */}
+          <div className="absolute bottom-4 right-4">
+            <LastCardButton
+              onClick={declareLastCard}
+              declared={currentPlayerState.declaredLastCard}
             />
           </div>
         </div>
@@ -200,9 +195,5 @@ export function GameBoard() {
     );
   }
 
-  return (
-    <div className="flex min-h-screen flex-col bg-felt">
-      {renderGameContent()}
-    </div>
-  );
+  return <div className="flex min-h-screen flex-col bg-felt">{renderGameContent()}</div>;
 }

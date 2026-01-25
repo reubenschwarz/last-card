@@ -5,7 +5,7 @@ export { PlayArea } from "./PlayArea";
 export { OrderStrip } from "./OrderStrip";
 export { SuitChooser } from "./SuitChooser";
 export { HandoffScreen } from "./HandoffScreen";
-export { GameControls } from "./GameControls";
+export { GameControls, LastCardButton } from "./GameControls";
 export { StatusBar } from "./StatusBar";
 export { WinScreen } from "./WinScreen";
 export { GameBoard } from "./GameBoard";
