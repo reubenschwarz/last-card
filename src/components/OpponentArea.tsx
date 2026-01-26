@@ -1,14 +1,16 @@
 "use client";
 
+import { PlayerType } from "@/engine";
 import { CardBack } from "./Card";
 
 interface OpponentAreaProps {
   cardCount: number;
   playerName: string;
+  playerType?: PlayerType;
   hasLastCardDeclared?: boolean;
 }
 
-export function OpponentArea({ cardCount, playerName, hasLastCardDeclared }: OpponentAreaProps) {
+export function OpponentArea({ cardCount, playerName, playerType, hasLastCardDeclared }: OpponentAreaProps) {
   // Display up to 7 card backs, then just show count
   const displayCount = Math.min(cardCount, 7);
 
@@ -16,6 +18,11 @@ export function OpponentArea({ cardCount, playerName, hasLastCardDeclared }: Opp
     <div className="flex flex-col items-center gap-2">
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium text-white/80">{playerName}</span>
+        {playerType === "ai" && (
+          <span className="rounded bg-purple-600 px-2 py-0.5 text-xs font-bold text-white">
+            AI
+          </span>
+        )}
         <span className="rounded bg-white/20 px-2 py-0.5 text-xs font-bold text-white">
           {cardCount} {cardCount === 1 ? "card" : "cards"}
         </span>

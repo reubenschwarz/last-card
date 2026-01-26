@@ -10,6 +10,7 @@ interface HandProps {
   onSelectCard: (card: CardType) => void;
   onDeselectCard: (card: CardType) => void;
   disabled?: boolean;
+  highlightCards?: CardType[]; // Cards to highlight (e.g., legal deflections)
 }
 
 // Rank order for sorting (A high, then K, Q, J, 10-2)
@@ -54,12 +55,14 @@ export function Hand({
   onSelectCard,
   onDeselectCard,
   disabled = false,
+  highlightCards = [],
 }: HandProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const sortedCards = sortCards(cards);
 
   const isSelected = (card: CardType) => selectedCards.some((c) => cardEquals(c, card));
+  const isHighlighted = (card: CardType) => highlightCards.some((c) => cardEquals(c, card));
 
   const handleCardClick = (card: CardType) => {
     if (disabled) return;
@@ -104,6 +107,7 @@ export function Hand({
               <Card
                 card={card}
                 selected={isSelected(card)}
+                highlighted={isHighlighted(card)}
                 selectable={!disabled}
                 onClick={() => handleCardClick(card)}
                 size="large"

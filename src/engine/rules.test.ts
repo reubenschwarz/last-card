@@ -17,9 +17,26 @@ import {
   canDeclareLastCard,
   getTopCard,
   getTargetSuit,
+  // Response phase functions
+  isInResponsePhase,
+  applyResolve,
+  applyDeflect,
+  getLegalDeflections,
+  // Seven Dispute functions
+  isInSevenDispute,
+  canPlaySevenCancelEffect,
+  canPlaySevenCancelLastCard,
+  getLegalSevenCancelsEffect,
+  getLegalSevenCancelsLastCard,
+  getLegalSevenDisputePlays,
+  canPlaySevenDispute,
+  applySevenCancelEffect,
+  applySevenCancelLastCard,
+  applySevenDisputePlay,
+  applySevenDisputeAccept,
 } from "./rules";
 import { createSeededRng } from "./deck";
-import { Card, GameState, Suit, cardEquals } from "./types";
+import { Card, GameState, PlayerType, Suit, cardEquals } from "./types";
 
 // Helper to create a card
 const card = (rank: string, suit: Suit): Card => ({ rank: rank as Card["rank"], suit });
@@ -28,8 +45,8 @@ const card = (rank: string, suit: Suit): Card => ({ rank: rank as Card["rank"], 
 function createTestState(overrides: Partial<GameState> = {}): GameState {
   const defaultState: GameState = {
     players: [
-      { id: 0, hand: [], declaredLastCard: false, lastCardPenalty: false },
-      { id: 1, hand: [], declaredLastCard: false, lastCardPenalty: false },
+      { id: 0, hand: [], playerType: "human", declaredLastCard: false, lastCardPenalty: false },
+      { id: 1, hand: [], playerType: "human", declaredLastCard: false, lastCardPenalty: false },
     ],
     currentPlayerIndex: 0,
     drawPile: [],
@@ -39,6 +56,14 @@ function createTestState(overrides: Partial<GameState> = {}): GameState {
     turnPhase: "playing",
     winner: null,
     lastPlayWasSpecial: false,
+    // Response phase state
+    responsePhase: null,
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    // Seven Dispute state
+    sevenDispute: null,
+    lastCardClaim: null,
+    turnNumber: 0,
   };
 
   return { ...defaultState, ...overrides };
@@ -803,5 +828,1238 @@ describe("Edge Cases", () => {
     expect(state.pendingEffects.skipNextPlayer).toBe(false);
     expect(state.chosenSuit).toBeNull();
     expect(state.lastPlayWasSpecial).toBe(false);
+  });
+});
+
+// ===========================================
+// Right of Reply / Response Chain Tests
+// ===========================================
+import {
+  isInResponsePhase,
+  getLegalDeflections,
+  getLegalCancels,
+  canCancel,
+  applyResolve,
+  applyDeflect,
+  applyCancel,
+} from "./rules";
+
+describe("Right of Reply - Response Phase", () => {
+  describe("Entering response phase", () => {
+    it("should enter response phase when 2 is played with effect activated", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      // Give player 0 a 2 of hearts
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+        { rank: "4", suit: "hearts" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Play the 2 with effect activated (default)
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+      expect(isInResponsePhase(state)).toBe(true);
+      expect(state.responseChainRank).toBe("2");
+      expect(state.respondingPlayerIndex).toBe(1);
+      expect(state.pendingEffects.forcedDrawCount).toBe(2);
+    });
+
+    it("should NOT enter response phase when 2 is played with effect deactivated", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+        { rank: "4", suit: "hearts" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Play the 2 with effect deactivated
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }], activateEffect: false });
+
+      expect(isInResponsePhase(state)).toBe(false);
+      expect(state.pendingEffects.forcedDrawCount).toBe(0);
+    });
+
+    it("should enter response phase when 10 is played", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "10", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+        { rank: "4", suit: "hearts" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
+
+      expect(isInResponsePhase(state)).toBe(true);
+      expect(state.responseChainRank).toBe("10");
+      expect(state.pendingEffects.skipNextPlayer).toBe(true);
+    });
+  });
+
+  describe("Resolve action", () => {
+    it("should accept draw effect when resolving", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "4", suit: "clubs" },
+        { rank: "5", suit: "clubs" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Play 2
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+      // Player 1 resolves
+      state = applyResolve(state);
+
+      expect(isInResponsePhase(state)).toBe(false);
+      expect(state.currentPlayerIndex).toBe(1);
+      expect(state.turnPhase).toBe("must-draw");
+      expect(state.pendingEffects.forcedDrawCount).toBe(2);
+    });
+
+    it("should accept skip effect when resolving 10", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "10", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Play 10
+      state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
+
+      // Player 1 resolves
+      state = applyResolve(state);
+
+      expect(isInResponsePhase(state)).toBe(false);
+      expect(state.currentPlayerIndex).toBe(1);
+      // Skip is consumed on resolve
+      expect(state.pendingEffects.skipNextPlayer).toBe(false);
+    });
+  });
+
+  describe("Deflect action", () => {
+    it("should pass +2 to next player when deflecting with another 2", () => {
+      let state = initializeGame(3, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "2", suit: "diamonds" },
+        { rank: "5", suit: "clubs" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 2
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+      expect(state.respondingPlayerIndex).toBe(1);
+      expect(state.pendingEffects.forcedDrawCount).toBe(2);
+
+      // Player 1 deflects with their 2
+      state = applyDeflect(state, { rank: "2", suit: "diamonds" });
+
+      // Now player 2 must respond to +4
+      expect(isInResponsePhase(state)).toBe(true);
+      expect(state.respondingPlayerIndex).toBe(2);
+      expect(state.pendingEffects.forcedDrawCount).toBe(4);
+      expect(state.players[1].hand.length).toBe(1); // Card removed from hand
+    });
+
+    it("should add +5 when deflecting with a 5", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "5", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "5", suit: "diamonds" },
+        { rank: "7", suit: "clubs" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 5
+      state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
+      expect(state.pendingEffects.forcedDrawCount).toBe(5);
+
+      // Player 1 deflects with their 5
+      state = applyDeflect(state, { rank: "5", suit: "diamonds" });
+
+      // Back to player 0 with +10
+      expect(state.respondingPlayerIndex).toBe(0);
+      expect(state.pendingEffects.forcedDrawCount).toBe(10);
+    });
+
+    it("should allow deflecting a 10 skip with another 10", () => {
+      let state = initializeGame(3, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "10", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "10", suit: "diamonds" },
+        { rank: "7", suit: "clubs" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 10
+      state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
+
+      // Player 1 deflects with their 10
+      state = applyDeflect(state, { rank: "10", suit: "diamonds" });
+
+      // Player 2 now faces the skip
+      expect(state.respondingPlayerIndex).toBe(2);
+      expect(state.pendingEffects.skipNextPlayer).toBe(true);
+    });
+  });
+
+  describe("Cancel action - same rank only rule", () => {
+    it("should only allow cancelling a 2 with another 2", () => {
+      let state = initializeGame(3, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "2", suit: "diamonds" },
+        { rank: "5", suit: "clubs" },
+        { rank: "10", suit: "spades" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 2
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+      expect(state.pendingEffects.forcedDrawCount).toBe(2);
+
+      // Only the 2 should be a legal cancel, not the 5 or 10
+      const cancels = getLegalCancels(state);
+      expect(cancels.length).toBe(1);
+      expect(cancels[0].rank).toBe("2");
+
+      // Cancel with 2 should work
+      state = applyCancel(state, { rank: "2", suit: "diamonds" });
+      expect(state.pendingEffects.forcedDrawCount).toBe(4); // Stacked
+      expect(state.responseChainRank).toBe("2"); // Still a 2 chain
+    });
+
+    it("should only allow cancelling a 5 with another 5", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "5", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "5", suit: "diamonds" },
+        { rank: "2", suit: "clubs" },
+        { rank: "10", suit: "spades" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 5
+      state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
+      expect(state.pendingEffects.forcedDrawCount).toBe(5);
+
+      // Only the 5 should be a legal cancel, not the 2 or 10
+      const cancels = getLegalCancels(state);
+      expect(cancels.length).toBe(1);
+      expect(cancels[0].rank).toBe("5");
+    });
+
+    it("should only allow cancelling a 10 with another 10", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "10", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "10", suit: "diamonds" },
+        { rank: "2", suit: "clubs" },
+        { rank: "5", suit: "spades" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 10
+      state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
+      expect(state.pendingEffects.skipNextPlayer).toBe(true);
+
+      // Only the 10 should be a legal cancel, not the 2 or 5
+      const cancels = getLegalCancels(state);
+      expect(cancels.length).toBe(1);
+      expect(cancels[0].rank).toBe("10");
+
+      // Cancel with 10 should pass the skip to next player
+      state = applyCancel(state, { rank: "10", suit: "diamonds" });
+      expect(state.pendingEffects.skipNextPlayer).toBe(true);
+      expect(state.responseChainRank).toBe("10");
+    });
+
+    it("should NOT allow a 10 to cancel a 2 chain", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "10", suit: "diamonds" }, // Has 10 but no 2
+        { rank: "7", suit: "clubs" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 2
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+      // No legal cancels since player 1 has no 2
+      const cancels = getLegalCancels(state);
+      expect(cancels.length).toBe(0);
+      expect(canCancel(state)).toBe(false);
+    });
+
+    it("should NOT allow a 2 to cancel a 5 chain", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "5", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "2", suit: "diamonds" }, // Has 2 but no 5
+        { rank: "7", suit: "clubs" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      // Player 0 plays 5
+      state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
+
+      // No legal cancels since player 1 has no 5
+      const cancels = getLegalCancels(state);
+      expect(cancels.length).toBe(0);
+      expect(canCancel(state)).toBe(false);
+    });
+  });
+
+  describe("Legal deflections and cancels", () => {
+    it("should only return matching rank cards for deflection", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "2", suit: "diamonds" },
+        { rank: "5", suit: "clubs" },
+        { rank: "7", suit: "spades" },
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(1);
+      expect(deflections[0].rank).toBe("2");
+    });
+
+    it("should return same rank cards as legal cancels (same rank only rule)", () => {
+      let state = initializeGame(2, createSeededRng(100));
+      state = confirmHandoff(state);
+
+      state.players[0].hand = [
+        { rank: "2", suit: "hearts" },
+        { rank: "3", suit: "hearts" },
+      ];
+      state.players[1].hand = [
+        { rank: "2", suit: "diamonds" },
+        { rank: "2", suit: "clubs" },
+        { rank: "10", suit: "spades" }, // 10 should NOT be a legal cancel for 2 chain
+      ];
+      state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+      state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+      const cancels = getLegalCancels(state);
+      expect(cancels.length).toBe(2);
+      expect(cancels.every((c) => c.rank === "2")).toBe(true); // Only 2s, not 10s
+    });
+  });
+});
+
+// ============================================
+// Seven Cancel Tests
+// ============================================
+
+describe("Seven Cancel - Type A: Cancel Pending Effect", () => {
+  it("should allow playing a 7 matching suit to cancel a +2 effect", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" }, // Matching suit 7
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    // Player 0 plays 2
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    expect(state.pendingEffects.forcedDrawCount).toBe(2);
+    expect(state.respondingPlayerIndex).toBe(1);
+
+    // Player 1 can play 7 to cancel
+    expect(canPlaySevenCancelEffect(state, 1)).toBe(true);
+    const sevens = getLegalSevenCancelsEffect(state, 1);
+    expect(sevens.length).toBe(1);
+    expect(sevens[0].rank).toBe("7");
+    expect(sevens[0].suit).toBe("hearts");
+
+    // Apply the 7 cancel
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+    expect(isInSevenDispute(state)).toBe(true);
+    expect(state.sevenDispute?.kind).toBe("EFFECT");
+    expect(state.sevenDispute?.cancelled).toBe(true); // First 7 cancels
+  });
+
+  it("should NOT allow playing a 7 with wrong suit to cancel", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "clubs" }, // Wrong suit
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+    // Player 1 cannot play 7 of clubs to cancel
+    expect(canPlaySevenCancelEffect(state, 1)).toBe(false);
+    const sevens = getLegalSevenCancelsEffect(state, 1);
+    expect(sevens.length).toBe(0);
+  });
+
+  it("should match 7 against the top card's suit (not old Ace chosen suit)", () => {
+    // When a 2 is played, it clears chosenSuit, so the 7 must match the 2's suit
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "clubs" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "clubs" }, // Matches the 2's suit
+      { rank: "7", suit: "hearts" }, // Wrong suit
+      { rank: "4", suit: "diamonds" },
+    ];
+    // Ace with chosen suit, but playing 2 will clear it
+    state.discardPile = [{ rank: "A", suit: "hearts" }];
+    state.chosenSuit = "diamonds"; // This gets cleared when 2 is played
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "clubs" }] });
+
+    // chosenSuit is now null, so effective suit is the 2's suit (clubs)
+    expect(state.chosenSuit).toBeNull();
+    expect(canPlaySevenCancelEffect(state, 1)).toBe(true);
+    const sevens = getLegalSevenCancelsEffect(state, 1);
+    expect(sevens.length).toBe(1);
+    expect(sevens[0].suit).toBe("clubs"); // Must match the 2's suit
+  });
+});
+
+describe("Seven Dispute Resolution", () => {
+  it("should toggle cancelled state when counter-7 is played", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "7", suit: "hearts" }, // Has a 7 to counter
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    // Player 0 plays 2
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+    // Player 1 plays 7 to cancel
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+    expect(state.sevenDispute?.cancelled).toBe(true);
+    expect(state.sevenDispute?.responderPlayerId).toBe(0); // Player 0 can counter
+
+    // Player 0 plays 7 to counter
+    expect(canPlaySevenDispute(state, 0)).toBe(true);
+    state = applySevenDisputePlay(state, { rank: "7", suit: "hearts" });
+    expect(state.sevenDispute?.cancelled).toBe(false); // Toggled back
+    expect(state.sevenDispute?.responderPlayerId).toBe(1); // Back to player 1
+  });
+
+  it("should clear effect when accepting cancelled dispute", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+
+    // Player 0 accepts (no 7 to counter)
+    state = applySevenDisputeAccept(state);
+
+    expect(isInSevenDispute(state)).toBe(false);
+    expect(state.pendingEffects.forcedDrawCount).toBe(0); // Effect cancelled
+    expect(state.turnPhase).toBe("can-end");
+  });
+
+  it("should apply effect when accepting non-cancelled dispute", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "7", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+
+    // Player 0 counters
+    state = applySevenDisputePlay(state, { rank: "7", suit: "hearts" });
+    expect(state.sevenDispute?.cancelled).toBe(false);
+
+    // Player 1 accepts (effect NOT cancelled)
+    state = applySevenDisputeAccept(state);
+
+    expect(isInSevenDispute(state)).toBe(false);
+    expect(state.pendingEffects.forcedDrawCount).toBe(2); // Original effect applies
+    expect(state.turnPhase).toBe("must-draw");
+  });
+});
+
+describe("Seven Cancel - Type B: Cancel Last Card Claim", () => {
+  it("should create lastCardClaim when player declares last card", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "6", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // Declare last card before playing
+    state = declareLastCard(state);
+
+    expect(state.lastCardClaim).not.toBeNull();
+    expect(state.lastCardClaim?.playerId).toBe(0);
+    expect(state.lastCardClaim?.turnNumberCreated).toBe(0);
+  });
+
+  it("should allow challenging last card claim with 7 on opponent's next turn", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+    state.turnNumber = 0;
+
+    state.players[0].hand = [
+      { rank: "6", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" }, // 7 matching suit
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // Player 0 declares and plays
+    state = declareLastCard(state);
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // Now it's turn 1, player 1's turn
+    expect(state.turnNumber).toBe(1);
+    expect(state.currentPlayerIndex).toBe(1);
+    expect(state.lastCardClaim?.playerId).toBe(0);
+    expect(state.lastCardClaim?.turnNumberCreated).toBe(0);
+
+    state = confirmHandoff(state);
+
+    // Player 1 can challenge
+    expect(canPlaySevenCancelLastCard(state, 1)).toBe(true);
+    const sevens = getLegalSevenCancelsLastCard(state, 1);
+    expect(sevens.length).toBe(1);
+  });
+
+  it("should NOT allow challenging last card after the immediate next turn", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+    state.turnNumber = 0;
+
+    state.players[0].hand = [
+      { rank: "6", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "4", suit: "clubs" },
+      { rank: "8", suit: "diamonds" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // Player 0 declares and plays
+    state = declareLastCard(state);
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // Player 1's turn (turn 1) - doesn't challenge
+    state = confirmHandoff(state);
+    state = applyPlay(state, { cards: [{ rank: "8", suit: "diamonds" }] });
+    state = nextTurn(state);
+
+    // Back to Player 0's turn (turn 2)
+    expect(state.turnNumber).toBe(2);
+    expect(state.lastCardClaim).toBeNull(); // Claim has expired
+  });
+
+  it("should remove last card protection when challenge succeeds", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+    state.turnNumber = 0;
+
+    state.players[0].hand = [
+      { rank: "6", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // Player 0 declares and plays
+    state = declareLastCard(state);
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // Player 1 challenges
+    state = confirmHandoff(state);
+    state = applySevenCancelLastCard(state, { rank: "7", suit: "hearts" });
+
+    // Dispute opened with cancelled = true
+    expect(isInSevenDispute(state)).toBe(true);
+    expect(state.sevenDispute?.kind).toBe("LAST_CARD");
+    expect(state.sevenDispute?.cancelled).toBe(true);
+
+    // Player 0 accepts (no 7 to counter)
+    state = applySevenDisputeAccept(state);
+
+    // Last card protection removed
+    expect(state.players[0].declaredLastCard).toBe(false);
+    expect(state.lastCardClaim).toBeNull();
+  });
+});
+
+describe("Seven Cancel - Immediate Win During Dispute", () => {
+  it("should win immediately when playing last card as 7 cancel", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" }, // Only card
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+
+    // Player 1 plays their last card (the 7) to cancel
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+
+    // Player 1 wins immediately!
+    expect(state.winner).toBe(1);
+    expect(state.turnPhase).toBe("game-over");
+    expect(isInSevenDispute(state)).toBe(false);
+  });
+
+  it("should win immediately when playing last card during 7 dispute", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "2", suit: "hearts" },
+      { rank: "7", suit: "hearts" }, // Has one 7 to counter
+    ];
+    state.players[1].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+
+    // Player 0 counters with their only remaining card
+    state.players[0].hand = [{ rank: "7", suit: "hearts" }]; // Set to only 7
+    state = applySevenDisputePlay(state, { rank: "7", suit: "hearts" });
+
+    // Player 0 wins!
+    expect(state.winner).toBe(0);
+    expect(state.turnPhase).toBe("game-over");
+  });
+});
+
+describe("Seven plays normally without cancel context", () => {
+  it("should play 7 as a normal card matching suit", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "7", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    // 7 should be playable as a normal card
+    const plays = getLegalPlays(state, 0);
+    const sevenPlay = plays.find((p) => p.play.cards[0].rank === "7");
+    expect(sevenPlay).toBeDefined();
+
+    state = applyPlay(state, { cards: [{ rank: "7", suit: "hearts" }] });
+
+    // No special effects
+    expect(state.pendingEffects.forcedDrawCount).toBe(0);
+    expect(state.pendingEffects.skipNextPlayer).toBe(false);
+    expect(isInSevenDispute(state)).toBe(false);
+  });
+
+  it("should play 7 as a normal card matching rank", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [
+      { rank: "7", suit: "clubs" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+    // 7 of clubs should be playable on 7 of hearts (rank match)
+    const plays = getLegalPlays(state, 0);
+    const sevenPlay = plays.find(
+      (p) => p.play.cards[0].rank === "7" && p.play.cards[0].suit === "clubs"
+    );
+    expect(sevenPlay).toBeDefined();
+  });
+});
+
+describe("Turn number incrementing", () => {
+  it("should increment turn number when advancing turns", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    expect(state.turnNumber).toBe(0);
+
+    state = confirmHandoff(state);
+    state.players[0].hand = [
+      { rank: "6", suit: "hearts" },
+      { rank: "3", suit: "hearts" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.turnNumber).toBe(1);
+
+    state = confirmHandoff(state);
+    state.players[1].hand = [
+      { rank: "8", suit: "diamonds" },
+      { rank: "4", suit: "clubs" },
+    ];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+    state = applyPlay(state, { cards: [{ rank: "8", suit: "diamonds" }] });
+    state = nextTurn(state);
+
+    expect(state.turnNumber).toBe(2);
+  });
+});
+
+// ============================================
+// N-Player Tests (3 and 4 players)
+// ============================================
+
+// Helper to create N-player test state
+function createTestStateNPlayers(
+  playerCount: number,
+  overrides: Partial<GameState> = {}
+): GameState {
+  const players = Array.from({ length: playerCount }, (_, i) => ({
+    id: i,
+    hand: [] as Card[],
+    playerType: "human" as PlayerType,
+    declaredLastCard: false,
+    lastCardPenalty: false,
+  }));
+
+  const defaultState: GameState = {
+    players,
+    currentPlayerIndex: 0,
+    drawPile: [],
+    discardPile: [card("6", "diamonds")],
+    chosenSuit: null,
+    pendingEffects: { forcedDrawCount: 0, skipNextPlayer: false },
+    turnPhase: "playing",
+    winner: null,
+    lastPlayWasSpecial: false,
+    responsePhase: null,
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    sevenDispute: null,
+    lastCardClaim: null,
+    turnNumber: 0,
+  };
+
+  return { ...defaultState, ...overrides };
+}
+
+describe("N-Player Basic Turn Rotation", () => {
+  it("should rotate through 3 players correctly", () => {
+    let state = initializeGame(3, createSeededRng(100));
+    expect(state.players.length).toBe(3);
+    expect(state.currentPlayerIndex).toBe(0);
+
+    state = confirmHandoff(state);
+    state.players[0].hand = [{ rank: "6", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.currentPlayerIndex).toBe(1);
+
+    state = confirmHandoff(state);
+    state.players[1].hand = [{ rank: "8", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state = applyPlay(state, { cards: [{ rank: "8", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.currentPlayerIndex).toBe(2);
+
+    state = confirmHandoff(state);
+    state.players[2].hand = [{ rank: "9", suit: "hearts" }, { rank: "5", suit: "clubs" }];
+    state = applyPlay(state, { cards: [{ rank: "9", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // Should wrap back to player 0
+    expect(state.currentPlayerIndex).toBe(0);
+  });
+
+  it("should rotate through 4 players correctly", () => {
+    let state = initializeGame(4, createSeededRng(100));
+    expect(state.players.length).toBe(4);
+    expect(state.currentPlayerIndex).toBe(0);
+
+    // Quick cycle through all 4 players
+    for (let i = 0; i < 4; i++) {
+      expect(state.currentPlayerIndex).toBe(i);
+      state = confirmHandoff(state);
+      state.players[i].hand = [{ rank: "6", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+      state.discardPile = [{ rank: "6", suit: "diamonds" }];
+      state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+      state = nextTurn(state);
+    }
+
+    // Should be back to player 0
+    expect(state.currentPlayerIndex).toBe(0);
+  });
+
+  it("should support player types in initialization", () => {
+    const playerTypes: PlayerType[] = ["human", "ai", "human"];
+    const state = initializeGame(3, createSeededRng(100), playerTypes);
+
+    expect(state.players[0].playerType).toBe("human");
+    expect(state.players[1].playerType).toBe("ai");
+    expect(state.players[2].playerType).toBe("human");
+  });
+});
+
+describe("N-Player Pass-Along Response Chains", () => {
+  it("should pass +2 chain through 4 players: P0 -> P1 deflect -> P2 deflect -> P3 resolve", () => {
+    let state = createTestStateNPlayers(4);
+    state = confirmHandoff(state);
+
+    // Setup: P0 plays 2, P1 and P2 have 2s, P3 has no 2
+    state.players[0].hand = [{ rank: "2", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "2", suit: "diamonds" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "2", suit: "clubs" }, { rank: "5", suit: "spades" }];
+    state.players[3].hand = [{ rank: "8", suit: "hearts" }, { rank: "9", suit: "clubs" }];
+    state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+    // P0 plays 2
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    expect(isInResponsePhase(state)).toBe(true);
+    expect(state.respondingPlayerIndex).toBe(1);
+    expect(state.pendingEffects.forcedDrawCount).toBe(2);
+
+    // P1 deflects with 2
+    state = applyDeflect(state, { rank: "2", suit: "diamonds" });
+    expect(isInResponsePhase(state)).toBe(true);
+    expect(state.respondingPlayerIndex).toBe(2);
+    expect(state.pendingEffects.forcedDrawCount).toBe(4);
+
+    // P2 deflects with 2
+    state = applyDeflect(state, { rank: "2", suit: "clubs" });
+    expect(isInResponsePhase(state)).toBe(true);
+    expect(state.respondingPlayerIndex).toBe(3);
+    expect(state.pendingEffects.forcedDrawCount).toBe(6);
+
+    // P3 has no 2, must resolve - draw 6 cards
+    state.drawPile = Array(10).fill({ rank: "3", suit: "hearts" });
+    state = applyResolve(state);
+
+    expect(isInResponsePhase(state)).toBe(false);
+    expect(state.currentPlayerIndex).toBe(3);
+    expect(state.turnPhase).toBe("must-draw");
+    expect(state.pendingEffects.forcedDrawCount).toBe(6);
+  });
+
+  it("should pass +5 chain through 3 players", () => {
+    let state = createTestStateNPlayers(3);
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [{ rank: "5", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "5", suit: "diamonds" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "8", suit: "hearts" }, { rank: "9", suit: "clubs" }];
+    state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+    // P0 plays 5
+    state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
+    expect(state.respondingPlayerIndex).toBe(1);
+    expect(state.pendingEffects.forcedDrawCount).toBe(5);
+
+    // P1 deflects with 5
+    state = applyDeflect(state, { rank: "5", suit: "diamonds" });
+    expect(state.respondingPlayerIndex).toBe(2);
+    expect(state.pendingEffects.forcedDrawCount).toBe(10);
+
+    // P2 resolves (no 5)
+    state.drawPile = Array(15).fill({ rank: "3", suit: "hearts" });
+    state = applyResolve(state);
+
+    expect(state.currentPlayerIndex).toBe(2);
+    expect(state.turnPhase).toBe("must-draw");
+    expect(state.pendingEffects.forcedDrawCount).toBe(10);
+  });
+
+  it("should pass 10 skip chain through players with skip=1 cap", () => {
+    let state = createTestStateNPlayers(4);
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [{ rank: "10", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "10", suit: "diamonds" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "10", suit: "clubs" }, { rank: "5", suit: "spades" }];
+    state.players[3].hand = [{ rank: "8", suit: "hearts" }, { rank: "9", suit: "clubs" }];
+    state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+    // P0 plays 10
+    state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
+    expect(state.pendingEffects.skipNextPlayer).toBe(true);
+    expect(state.respondingPlayerIndex).toBe(1);
+
+    // P1 deflects with 10 (skip stays at 1)
+    state = applyDeflect(state, { rank: "10", suit: "diamonds" });
+    expect(state.pendingEffects.skipNextPlayer).toBe(true); // Still true, doesn't stack
+    expect(state.respondingPlayerIndex).toBe(2);
+
+    // P2 deflects with 10
+    state = applyDeflect(state, { rank: "10", suit: "clubs" });
+    expect(state.pendingEffects.skipNextPlayer).toBe(true);
+    expect(state.respondingPlayerIndex).toBe(3);
+
+    // P3 resolves
+    state = applyResolve(state);
+    expect(state.pendingEffects.skipNextPlayer).toBe(false); // Consumed on resolve
+  });
+});
+
+describe("N-Player Skip Delaying Penalties", () => {
+  it("should delay last-card penalty when player is skipped", () => {
+    let state = createTestStateNPlayers(3);
+    state = confirmHandoff(state);
+
+    // P0 has 2 cards, will get last card penalty
+    state.players[0].hand = [{ rank: "6", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "10", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "8", suit: "hearts" }, { rank: "9", suit: "clubs" }];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // P0 plays, doesn't declare last card
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // P0 should have penalty flagged
+    expect(state.players[0].lastCardPenalty).toBe(true);
+    expect(state.currentPlayerIndex).toBe(1);
+
+    // P1 plays 10 (skip)
+    state = confirmHandoff(state);
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+    state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
+
+    // P2 resolves the skip
+    state = applyResolve(state);
+
+    // Turn should advance, skipping P2
+    state = nextTurn(state);
+
+    // Now back to P0's turn with penalty still there
+    expect(state.currentPlayerIndex).toBe(0);
+    expect(state.players[0].lastCardPenalty).toBe(true);
+    expect(state.turnPhase).toBe("must-draw");
+  });
+});
+
+describe("N-Player 7 Dispute Pass-Along", () => {
+  it("should pass 7 dispute around 3 players", () => {
+    let state = createTestStateNPlayers(3);
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [{ rank: "2", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "7", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "7", suit: "hearts" }, { rank: "5", suit: "spades" }];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    // P0 plays 2
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    expect(state.respondingPlayerIndex).toBe(1);
+
+    // P1 plays 7 to cancel
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+    expect(isInSevenDispute(state)).toBe(true);
+    expect(state.sevenDispute?.cancelled).toBe(true);
+    expect(state.sevenDispute?.responderPlayerId).toBe(2); // P2's turn to respond
+
+    // P2 plays 7 to counter
+    state = applySevenDisputePlay(state, { rank: "7", suit: "hearts" });
+    expect(state.sevenDispute?.cancelled).toBe(false);
+    expect(state.sevenDispute?.responderPlayerId).toBe(0); // Back to P0
+
+    // P0 has no 7, accepts (effect NOT cancelled)
+    state = applySevenDisputeAccept(state);
+    expect(isInSevenDispute(state)).toBe(false);
+    // Effect should be reinstated - P0 faces the draw
+    expect(state.pendingEffects.forcedDrawCount).toBe(2);
+  });
+
+  it("should pass 7 dispute around 4 players until acceptance", () => {
+    let state = createTestStateNPlayers(4);
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [{ rank: "5", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "7", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "7", suit: "diamonds" }, { rank: "5", suit: "spades" }];
+    state.players[3].hand = [{ rank: "7", suit: "clubs" }, { rank: "6", suit: "spades" }];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    // P0 plays 5
+    state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
+    expect(state.pendingEffects.forcedDrawCount).toBe(5);
+
+    // P1 plays 7 to cancel
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+    expect(state.sevenDispute?.cancelled).toBe(true);
+    expect(state.sevenDispute?.responderPlayerId).toBe(2);
+
+    // P2 plays 7 (any suit works in dispute)
+    state = applySevenDisputePlay(state, { rank: "7", suit: "diamonds" });
+    expect(state.sevenDispute?.cancelled).toBe(false);
+    expect(state.sevenDispute?.responderPlayerId).toBe(3);
+
+    // P3 plays 7
+    state = applySevenDisputePlay(state, { rank: "7", suit: "clubs" });
+    expect(state.sevenDispute?.cancelled).toBe(true);
+    expect(state.sevenDispute?.responderPlayerId).toBe(0);
+
+    // P0 accepts (cancelled = true)
+    state = applySevenDisputeAccept(state);
+    expect(isInSevenDispute(state)).toBe(false);
+    // Effect cancelled - no forced draw
+    expect(state.pendingEffects.forcedDrawCount).toBe(0);
+  });
+});
+
+describe("N-Player Last Card Claim Cancellation", () => {
+  it("should only allow next player to challenge last card claim", () => {
+    let state = createTestStateNPlayers(3);
+    state = confirmHandoff(state);
+    state.turnNumber = 0;
+
+    state.players[0].hand = [{ rank: "6", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "7", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state.players[2].hand = [{ rank: "8", suit: "hearts" }, { rank: "5", suit: "spades" }];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // P0 declares and plays
+    state = declareLastCard(state);
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.lastCardClaim?.playerId).toBe(0);
+    expect(state.turnNumber).toBe(1);
+
+    // P1 (next player) CAN challenge
+    expect(canPlaySevenCancelLastCard(state, 1)).toBe(true);
+    // P2 cannot challenge (not immediately next)
+    expect(canPlaySevenCancelLastCard(state, 2)).toBe(false);
+
+    // P1 doesn't challenge, just plays normally
+    state = confirmHandoff(state);
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "8", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state = applyPlay(state, { cards: [{ rank: "8", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // Now on turn 2, P2's turn - claim should have expired
+    expect(state.turnNumber).toBe(2);
+    expect(state.lastCardClaim).toBeNull();
+  });
+
+  it("should expire last card claim after one turn in 4-player game", () => {
+    let state = createTestStateNPlayers(4);
+    state = confirmHandoff(state);
+    state.turnNumber = 0;
+
+    state.players[0].hand = [{ rank: "6", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "7", suit: "hearts" }, { rank: "8", suit: "hearts" }];
+    state.players[2].hand = [{ rank: "9", suit: "hearts" }, { rank: "5", suit: "spades" }];
+    state.players[3].hand = [{ rank: "10", suit: "hearts" }, { rank: "6", suit: "clubs" }];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+
+    // P0 declares and plays
+    state = declareLastCard(state);
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.lastCardClaim?.playerId).toBe(0);
+
+    // P1's turn - can challenge
+    expect(canPlaySevenCancelLastCard(state, 1)).toBe(true);
+
+    // P1 plays normally
+    state = confirmHandoff(state);
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+    state = applyPlay(state, { cards: [{ rank: "8", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    // P2's turn - claim expired
+    expect(state.lastCardClaim).toBeNull();
+    expect(canPlaySevenCancelLastCard(state, 2)).toBe(false);
+  });
+});
+
+describe("Regression: 2-Player Behavior Unchanged", () => {
+  it("should maintain 2-player turn rotation", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    expect(state.players.length).toBe(2);
+
+    state = confirmHandoff(state);
+    state.players[0].hand = [{ rank: "6", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.discardPile = [{ rank: "6", suit: "diamonds" }];
+    state = applyPlay(state, { cards: [{ rank: "6", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.currentPlayerIndex).toBe(1);
+
+    state = confirmHandoff(state);
+    state.players[1].hand = [{ rank: "8", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state = applyPlay(state, { cards: [{ rank: "8", suit: "hearts" }] });
+    state = nextTurn(state);
+
+    expect(state.currentPlayerIndex).toBe(0);
+  });
+
+  it("should maintain 2-player response chain behavior", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [{ rank: "2", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "2", suit: "diamonds" }, { rank: "4", suit: "clubs" }];
+    state.discardPile = [{ rank: "7", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    expect(state.respondingPlayerIndex).toBe(1);
+    expect(state.pendingEffects.forcedDrawCount).toBe(2);
+
+    state = applyDeflect(state, { rank: "2", suit: "diamonds" });
+    expect(state.respondingPlayerIndex).toBe(0);
+    expect(state.pendingEffects.forcedDrawCount).toBe(4);
+  });
+
+  it("should maintain 2-player 7 dispute behavior", () => {
+    let state = initializeGame(2, createSeededRng(100));
+    state = confirmHandoff(state);
+
+    state.players[0].hand = [{ rank: "2", suit: "hearts" }, { rank: "3", suit: "hearts" }];
+    state.players[1].hand = [{ rank: "7", suit: "hearts" }, { rank: "4", suit: "clubs" }];
+    state.discardPile = [{ rank: "6", suit: "hearts" }];
+
+    state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
+    state = applySevenCancelEffect(state, { rank: "7", suit: "hearts" });
+
+    expect(isInSevenDispute(state)).toBe(true);
+    expect(state.sevenDispute?.responderPlayerId).toBe(0);
   });
 });

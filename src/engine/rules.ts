@@ -9,11 +9,15 @@ import {
   cardEquals,
   cardToString,
   GameState,
+  LastCardClaim,
   LegalPlay,
   PendingEffects,
   Play,
   PlayerState,
+  PlayerType,
   Rank,
+  SevenDispute,
+  SpecialRank,
   Suit,
   TurnPhase,
 } from "./types";
@@ -22,13 +26,23 @@ const INITIAL_HAND_SIZE = 7;
 
 /**
  * Initialize a new game with the specified number of players
+ * @param playerCount Number of players (2-4)
+ * @param rng Optional seeded RNG for deterministic tests
+ * @param playerTypes Optional array of player types; defaults to all "human"
  */
 export function initializeGame(
   playerCount: number,
-  rng?: () => number
+  rng?: () => number,
+  playerTypes?: PlayerType[]
 ): GameState {
   if (playerCount < 2 || playerCount > 4) {
     throw new Error("Player count must be between 2 and 4");
+  }
+
+  // Default all players to human if not specified
+  const types = playerTypes ?? Array(playerCount).fill("human" as PlayerType);
+  if (types.length !== playerCount) {
+    throw new Error("playerTypes array length must match playerCount");
   }
 
   const deck = createShuffledDeck(rng);
@@ -39,6 +53,7 @@ export function initializeGame(
     players.push({
       id: i,
       hand: deck.splice(0, INITIAL_HAND_SIZE),
+      playerType: types[i],
       declaredLastCard: false,
       lastCardPenalty: false,
     });
@@ -66,6 +81,14 @@ export function initializeGame(
     turnPhase: "waiting", // Start in waiting phase for hotseat
     winner: null,
     lastPlayWasSpecial: false, // First card doesn't count as special play
+    // Right of Reply state
+    responsePhase: null,
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    // Seven Dispute state
+    sevenDispute: null,
+    lastCardClaim: null,
+    turnNumber: 0,
   };
 }
 
@@ -378,21 +401,30 @@ export function applyPlay(state: GameState, play: Play): GameState {
   // Add cards to discard pile
   const newDiscardPile = [...state.discardPile, ...play.cards];
 
-  // Calculate new pending effects from played cards
+  // Check if activation is enabled (default true)
+  const shouldActivate = play.activateEffect !== false;
+
+  // Calculate new pending effects from played cards (only if activated)
   let newForcedDraw = 0;
   let newSkip = false;
+  let responseChainRank: SpecialRank | null = null;
 
-  for (const card of play.cards) {
-    switch (card.rank) {
-      case "2":
-        newForcedDraw += 2;
-        break;
-      case "5":
-        newForcedDraw += 5;
-        break;
-      case "10":
-        newSkip = true;
-        break;
+  if (shouldActivate) {
+    for (const card of play.cards) {
+      switch (card.rank) {
+        case "2":
+          newForcedDraw += 2;
+          responseChainRank = "2";
+          break;
+        case "5":
+          newForcedDraw += 5;
+          responseChainRank = "5";
+          break;
+        case "10":
+          newSkip = true;
+          responseChainRank = "10";
+          break;
+      }
     }
   }
 
@@ -418,6 +450,35 @@ export function applyPlay(state: GameState, play: Play): GameState {
   const lastCard = play.cards[play.cards.length - 1];
   const newChosenSuit = lastCard.rank === "A" ? (play.chosenSuit ?? null) : null;
 
+  // Determine if we enter response phase
+  const playerCount = state.players.length;
+  const nextPlayerIndex = (playerId + 1) % playerCount;
+  const shouldEnterResponsePhase = hasSpecialEffect && winner === null;
+
+  if (shouldEnterResponsePhase) {
+    // Enter response phase - next player can respond
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      chosenSuit: newChosenSuit,
+      pendingEffects: {
+        forcedDrawCount: newForcedDraw,
+        skipNextPlayer: newSkip,
+      },
+      turnPhase: "can-end", // Original player's turn ends
+      winner,
+      lastPlayWasSpecial: hasSpecialEffect,
+      responsePhase: "responding",
+      responseChainRank,
+      respondingPlayerIndex: nextPlayerIndex,
+      // Preserve seven dispute state
+      sevenDispute: state.sevenDispute,
+      lastCardClaim: state.lastCardClaim,
+      turnNumber: state.turnNumber,
+    };
+  }
+
   return {
     ...state,
     players: newPlayers,
@@ -430,6 +491,13 @@ export function applyPlay(state: GameState, play: Play): GameState {
     turnPhase: winner !== null ? "game-over" : "can-end",
     winner,
     lastPlayWasSpecial: hasSpecialEffect,
+    responsePhase: null,
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    // Preserve seven dispute state
+    sevenDispute: state.sevenDispute,
+    lastCardClaim: state.lastCardClaim,
+    turnNumber: state.turnNumber,
   };
 }
 
@@ -493,6 +561,10 @@ export function applyDraw(state: GameState, count: number): GameState {
       forcedDrawCount: 0, // Clear forced draw after drawing
     },
     turnPhase: "can-end",
+    // Preserve seven dispute state
+    sevenDispute: state.sevenDispute,
+    lastCardClaim: state.lastCardClaim,
+    turnNumber: state.turnNumber,
   };
 }
 
@@ -526,6 +598,15 @@ export function nextTurn(state: GameState): GameState {
   // Apply skip if pending
   if (state.pendingEffects.skipNextPlayer) {
     nextIndex = (nextIndex + 1) % playerCount;
+  }
+
+  // Increment turn number
+  const newTurnNumber = state.turnNumber + 1;
+
+  // Check if lastCardClaim has expired (only valid for one turn after creation)
+  let newLastCardClaim = state.lastCardClaim;
+  if (newLastCardClaim && newTurnNumber > newLastCardClaim.turnNumberCreated + 1) {
+    newLastCardClaim = null;
   }
 
   // Check if the current player needs a last card penalty
@@ -567,6 +648,14 @@ export function nextTurn(state: GameState): GameState {
     },
     turnPhase,
     lastPlayWasSpecial: false,
+    // Clear response phase when advancing turn
+    responsePhase: null,
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    // Seven dispute state
+    sevenDispute: null, // Clear any dispute when turn ends
+    lastCardClaim: newLastCardClaim,
+    turnNumber: newTurnNumber,
   };
 }
 
@@ -602,6 +691,11 @@ export function declareLastCard(state: GameState): GameState {
     players: state.players.map((p, i) =>
       i === playerId ? { ...p, declaredLastCard: true } : p
     ),
+    // Create a lastCardClaim so opponent can challenge with a 7
+    lastCardClaim: {
+      playerId,
+      turnNumberCreated: state.turnNumber,
+    },
   };
 }
 
@@ -682,6 +776,14 @@ export function getStatusMessage(state: GameState): string {
   const player = state.players[state.currentPlayerIndex];
   const playerName = `Player ${state.currentPlayerIndex + 1}`;
 
+  if (state.responsePhase === "responding" && state.respondingPlayerIndex !== null) {
+    const responderName = `Player ${state.respondingPlayerIndex + 1}`;
+    if (state.responseChainRank === "10") {
+      return `${responderName}: Respond to skip or resolve`;
+    }
+    return `${responderName}: Respond to +${state.pendingEffects.forcedDrawCount} or resolve`;
+  }
+
   if (state.turnPhase === "waiting") {
     return `Pass to ${playerName}`;
   }
@@ -702,4 +804,559 @@ export function getStatusMessage(state: GameState): string {
   }
 
   return `${playerName}'s turn`;
+}
+
+// ============================================
+// Right of Reply - Response Phase Functions
+// ============================================
+
+/**
+ * Check if we're in a response phase
+ */
+export function isInResponsePhase(state: GameState): boolean {
+  return state.responsePhase === "responding" && state.respondingPlayerIndex !== null;
+}
+
+/**
+ * Get the player who must respond (or null if not in response phase)
+ */
+export function getRespondingPlayer(state: GameState): PlayerState | null {
+  if (!isInResponsePhase(state) || state.respondingPlayerIndex === null) {
+    return null;
+  }
+  return state.players[state.respondingPlayerIndex];
+}
+
+/**
+ * Get legal deflection cards for the responding player
+ * For 2/5 chains: can deflect with same rank
+ * For 10 chains: can deflect with another 10
+ */
+export function getLegalDeflections(state: GameState): Card[] {
+  if (!isInResponsePhase(state) || state.respondingPlayerIndex === null) {
+    return [];
+  }
+
+  const responder = state.players[state.respondingPlayerIndex];
+  const chainRank = state.responseChainRank;
+
+  if (!chainRank) return [];
+
+  // Can only deflect with the same rank as the chain
+  return responder.hand.filter((card) => card.rank === chainRank);
+}
+
+/**
+ * Check if a cancel is possible
+ * Only the same rank can cancel: 2 cancels 2, 5 cancels 5, 10 cancels 10
+ * This is effectively the same as deflection now.
+ */
+export function canCancel(state: GameState): boolean {
+  // Cancel is now the same as deflect - same rank only
+  return getLegalDeflections(state).length > 0;
+}
+
+/**
+ * Get legal cancel cards (same rank as the chain)
+ * Only same rank can cancel: 2 cancels 2, 5 cancels 5, 10 cancels 10
+ */
+export function getLegalCancels(state: GameState): Card[] {
+  // Cancel cards are the same as deflection cards - same rank only
+  return getLegalDeflections(state);
+}
+
+/**
+ * Apply "Resolve" - accept the pending effects
+ * The responding player accepts the draw/skip and becomes the current player
+ */
+export function applyResolve(state: GameState): GameState {
+  if (!isInResponsePhase(state) || state.respondingPlayerIndex === null) {
+    return state;
+  }
+
+  const respondingIndex = state.respondingPlayerIndex;
+
+  // End response phase and make the responding player the current player
+  // They will face the pending effects
+  return {
+    ...state,
+    currentPlayerIndex: respondingIndex,
+    turnPhase: state.pendingEffects.forcedDrawCount > 0 ? "must-draw" : "waiting",
+    responsePhase: null,
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    // Skip is consumed when resolving a 10 response
+    pendingEffects: {
+      ...state.pendingEffects,
+      skipNextPlayer: false,
+    },
+  };
+}
+
+/**
+ * Apply "Deflect" - play a matching card to pass the effect to the next player
+ * For 2s/5s: adds to the draw count
+ * For 10s: passes the skip to the next player
+ */
+export function applyDeflect(state: GameState, card: Card): GameState {
+  if (!isInResponsePhase(state) || state.respondingPlayerIndex === null) {
+    return state;
+  }
+
+  const respondingIndex = state.respondingPlayerIndex;
+  const responder = state.players[respondingIndex];
+  const chainRank = state.responseChainRank;
+
+  // Verify the card is a legal deflection
+  if (card.rank !== chainRank) {
+    return state;
+  }
+
+  // Remove the card from responder's hand
+  const newHand = responder.hand.filter((c) => !cardEquals(c, card));
+
+  // Add card to discard pile
+  const newDiscardPile = [...state.discardPile, card];
+
+  // Update pending effects
+  let newForcedDraw = state.pendingEffects.forcedDrawCount;
+  if (card.rank === "2") {
+    newForcedDraw += 2;
+  } else if (card.rank === "5") {
+    newForcedDraw += 5;
+  }
+
+  // Update players
+  const newPlayers = state.players.map((p, i) =>
+    i === respondingIndex ? { ...p, hand: newHand } : p
+  );
+
+  // Check for win (if responder played their last card)
+  const winner = newHand.length === 0 ? respondingIndex : null;
+
+  if (winner !== null) {
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      pendingEffects: {
+        forcedDrawCount: newForcedDraw,
+        skipNextPlayer: chainRank === "10",
+      },
+      winner,
+      turnPhase: "game-over",
+      responsePhase: null,
+      responseChainRank: null,
+      respondingPlayerIndex: null,
+    };
+  }
+
+  // Calculate next responding player
+  const playerCount = state.players.length;
+  const nextRespondingIndex = (respondingIndex + 1) % playerCount;
+
+  return {
+    ...state,
+    players: newPlayers,
+    discardPile: newDiscardPile,
+    pendingEffects: {
+      forcedDrawCount: newForcedDraw,
+      skipNextPlayer: chainRank === "10",
+    },
+    // Continue response phase with next player
+    responsePhase: "responding",
+    responseChainRank: chainRank,
+    respondingPlayerIndex: nextRespondingIndex,
+  };
+}
+
+/**
+ * Apply "Cancel" - play a card of the same rank to cancel/deflect
+ * Only same rank can cancel: 2 cancels 2, 5 cancels 5, 10 cancels 10
+ * This is now effectively the same as deflect.
+ */
+export function applyCancel(state: GameState, card: Card): GameState {
+  // Cancel is now the same as deflect - delegate to applyDeflect
+  return applyDeflect(state, card);
+}
+
+// ============================================
+// Seven Dispute - 7-Cancel Mechanic Functions
+// ============================================
+
+/**
+ * Check if we're in an active seven dispute
+ */
+export function isInSevenDispute(state: GameState): boolean {
+  return state.sevenDispute !== null;
+}
+
+/**
+ * Get the effective suit for 7-cancel matching
+ * (matches chosenSuit if Ace was played, otherwise top card's suit)
+ */
+function getEffectiveSuitForSevenCancel(state: GameState): Suit {
+  return state.chosenSuit ?? getTopCard(state).suit;
+}
+
+/**
+ * Check if a player can initiate a 7-cancel (Type A: cancel pending effect)
+ * Only available during response phase when there's a pending effect
+ */
+export function canPlaySevenCancelEffect(state: GameState, playerId: number): boolean {
+  // Must be in response phase
+  if (!isInResponsePhase(state)) return false;
+  // Must be the responding player
+  if (state.respondingPlayerIndex !== playerId) return false;
+  // Must have a pending effect to cancel
+  if (state.pendingEffects.forcedDrawCount === 0 && !state.pendingEffects.skipNextPlayer) {
+    return false;
+  }
+  // Check if player has a 7 matching the effective suit
+  const effectiveSuit = getEffectiveSuitForSevenCancel(state);
+  const player = state.players[playerId];
+  return player.hand.some((c) => c.rank === "7" && c.suit === effectiveSuit);
+}
+
+/**
+ * Check if a player can initiate a 7-cancel (Type B: cancel Last Card claim)
+ * Only available on opponent's turn immediately after the claim was made
+ */
+export function canPlaySevenCancelLastCard(state: GameState, playerId: number): boolean {
+  // Must have an active lastCardClaim
+  if (!state.lastCardClaim) return false;
+  // Must be on the turn immediately after the claim (turnNumber == claim.turnNumberCreated + 1)
+  if (state.turnNumber !== state.lastCardClaim.turnNumberCreated + 1) return false;
+  // Must be the current player (opponent of the claimer)
+  if (state.currentPlayerIndex !== playerId) return false;
+  // Must not be the claimer themselves
+  if (state.lastCardClaim.playerId === playerId) return false;
+  // Check if player has a 7 matching the effective suit
+  const effectiveSuit = getEffectiveSuitForSevenCancel(state);
+  const player = state.players[playerId];
+  return player.hand.some((c) => c.rank === "7" && c.suit === effectiveSuit);
+}
+
+/**
+ * Get legal 7 cards for canceling a pending effect (Type A)
+ */
+export function getLegalSevenCancelsEffect(state: GameState, playerId: number): Card[] {
+  if (!canPlaySevenCancelEffect(state, playerId)) return [];
+  const effectiveSuit = getEffectiveSuitForSevenCancel(state);
+  const player = state.players[playerId];
+  return player.hand.filter((c) => c.rank === "7" && c.suit === effectiveSuit);
+}
+
+/**
+ * Get legal 7 cards for canceling a Last Card claim (Type B)
+ */
+export function getLegalSevenCancelsLastCard(state: GameState, playerId: number): Card[] {
+  if (!canPlaySevenCancelLastCard(state, playerId)) return [];
+  const effectiveSuit = getEffectiveSuitForSevenCancel(state);
+  const player = state.players[playerId];
+  return player.hand.filter((c) => c.rank === "7" && c.suit === effectiveSuit);
+}
+
+/**
+ * Apply a 7 to cancel a pending effect (Type A)
+ * Opens a Seven Dispute where opponent can counter-cancel
+ */
+export function applySevenCancelEffect(state: GameState, card: Card): GameState {
+  if (!isInResponsePhase(state) || state.respondingPlayerIndex === null) {
+    return state;
+  }
+
+  const respondingIndex = state.respondingPlayerIndex;
+  const responder = state.players[respondingIndex];
+
+  // Verify the card is a 7 matching the effective suit
+  const effectiveSuit = getEffectiveSuitForSevenCancel(state);
+  if (card.rank !== "7" || card.suit !== effectiveSuit) {
+    return state;
+  }
+
+  // Remove the 7 from responder's hand
+  const newHand = responder.hand.filter((c) => !cardEquals(c, card));
+
+  // Add card to discard pile
+  const newDiscardPile = [...state.discardPile, card];
+
+  // Update players
+  const newPlayers = state.players.map((p, i) =>
+    i === respondingIndex ? { ...p, hand: newHand } : p
+  );
+
+  // Check for immediate win (if responder played their last card)
+  const winner = newHand.length === 0 ? respondingIndex : null;
+
+  if (winner !== null) {
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      winner,
+      turnPhase: "game-over",
+      responsePhase: null,
+      responseChainRank: null,
+      respondingPlayerIndex: null,
+      sevenDispute: null,
+      chosenSuit: null, // Clear suit override after 7
+    };
+  }
+
+  // Identify the original attacker (who must resolve if not cancelled)
+  // In 2-player, this is the other player
+  const playerCount = state.players.length;
+  const attackerIndex = (respondingIndex + 1) % playerCount;
+
+  // Create Seven Dispute state
+  const sevenDispute: SevenDispute = {
+    kind: "EFFECT",
+    effectSnapshot: {
+      drawAmount: state.pendingEffects.forcedDrawCount,
+      skip: state.pendingEffects.skipNextPlayer,
+      responsiblePlayerId: attackerIndex, // Original attacker resolves if cancelled
+    },
+    cancelled: true, // First 7 cancels the effect
+    responderPlayerId: attackerIndex, // Other player can counter
+  };
+
+  return {
+    ...state,
+    players: newPlayers,
+    discardPile: newDiscardPile,
+    chosenSuit: null, // Clear suit override after 7
+    // Keep pending effects snapshot'd but paused during dispute
+    pendingEffects: state.pendingEffects,
+    turnPhase: "playing", // Keep active during dispute
+    responsePhase: null, // Exit normal response phase
+    responseChainRank: null,
+    respondingPlayerIndex: null,
+    sevenDispute,
+  };
+}
+
+/**
+ * Apply a 7 to cancel a Last Card claim (Type B)
+ * Opens a Seven Dispute where the claimer can counter
+ */
+export function applySevenCancelLastCard(state: GameState, card: Card): GameState {
+  if (!state.lastCardClaim) return state;
+
+  const playerId = state.currentPlayerIndex;
+  const player = state.players[playerId];
+
+  // Verify the card is a 7 matching the effective suit
+  const effectiveSuit = getEffectiveSuitForSevenCancel(state);
+  if (card.rank !== "7" || card.suit !== effectiveSuit) {
+    return state;
+  }
+
+  // Remove the 7 from player's hand
+  const newHand = player.hand.filter((c) => !cardEquals(c, card));
+
+  // Add card to discard pile
+  const newDiscardPile = [...state.discardPile, card];
+
+  // Update players
+  const newPlayers = state.players.map((p, i) =>
+    i === playerId ? { ...p, hand: newHand } : p
+  );
+
+  // Check for immediate win
+  const winner = newHand.length === 0 ? playerId : null;
+
+  if (winner !== null) {
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      winner,
+      turnPhase: "game-over",
+      sevenDispute: null,
+      lastCardClaim: null,
+      chosenSuit: null,
+    };
+  }
+
+  // Create Seven Dispute state
+  const sevenDispute: SevenDispute = {
+    kind: "LAST_CARD",
+    lastCardClaimPlayerId: state.lastCardClaim.playerId,
+    cancelled: true, // First 7 cancels the claim
+    responderPlayerId: state.lastCardClaim.playerId, // Claimer can counter
+  };
+
+  return {
+    ...state,
+    players: newPlayers,
+    discardPile: newDiscardPile,
+    chosenSuit: null, // Clear suit override after 7
+    turnPhase: "playing",
+    sevenDispute,
+    // Keep lastCardClaim until dispute resolves
+  };
+}
+
+/**
+ * Get legal 7 cards during an active Seven Dispute (any 7 is valid)
+ */
+export function getLegalSevenDisputePlays(state: GameState, playerId: number): Card[] {
+  if (!state.sevenDispute) return [];
+  if (state.sevenDispute.responderPlayerId !== playerId) return [];
+
+  const player = state.players[playerId];
+  return player.hand.filter((c) => c.rank === "7");
+}
+
+/**
+ * Check if a player can play a 7 during a Seven Dispute
+ */
+export function canPlaySevenDispute(state: GameState, playerId: number): boolean {
+  return getLegalSevenDisputePlays(state, playerId).length > 0;
+}
+
+/**
+ * Apply playing a 7 during an active Seven Dispute (toggles cancelled)
+ */
+export function applySevenDisputePlay(state: GameState, card: Card): GameState {
+  if (!state.sevenDispute) return state;
+
+  const responderId = state.sevenDispute.responderPlayerId;
+  const responder = state.players[responderId];
+
+  // Verify the card is a 7 (any suit - during dispute, suit doesn't need to match)
+  if (card.rank !== "7") {
+    return state;
+  }
+
+  // Remove the 7 from responder's hand
+  const newHand = responder.hand.filter((c) => !cardEquals(c, card));
+
+  // Add card to discard pile
+  const newDiscardPile = [...state.discardPile, card];
+
+  // Update players
+  const newPlayers = state.players.map((p, i) =>
+    i === responderId ? { ...p, hand: newHand } : p
+  );
+
+  // Check for immediate win
+  const winner = newHand.length === 0 ? responderId : null;
+
+  if (winner !== null) {
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      winner,
+      turnPhase: "game-over",
+      sevenDispute: null,
+      lastCardClaim: null,
+      chosenSuit: null,
+    };
+  }
+
+  // Toggle cancelled and switch responder
+  const playerCount = state.players.length;
+  const nextResponderId = (responderId + 1) % playerCount;
+
+  return {
+    ...state,
+    players: newPlayers,
+    discardPile: newDiscardPile,
+    chosenSuit: null,
+    sevenDispute: {
+      ...state.sevenDispute,
+      cancelled: !state.sevenDispute.cancelled,
+      responderPlayerId: nextResponderId,
+    },
+  };
+}
+
+/**
+ * Accept the current outcome of a Seven Dispute
+ */
+export function applySevenDisputeAccept(state: GameState): GameState {
+  if (!state.sevenDispute) return state;
+
+  const dispute = state.sevenDispute;
+
+  if (dispute.kind === "EFFECT") {
+    if (dispute.cancelled) {
+      // Effect was cancelled - original attacker's turn continues normally
+      // Clear pending effects
+      return {
+        ...state,
+        pendingEffects: {
+          forcedDrawCount: 0,
+          skipNextPlayer: false,
+        },
+        turnPhase: "can-end",
+        sevenDispute: null,
+      };
+    } else {
+      // Effect NOT cancelled - responder must face the original effect
+      // The responsible player (original attacker who played 2/5/10) is not affected
+      // The current responder must take the effect
+      const responderId = dispute.responderPlayerId;
+      return {
+        ...state,
+        currentPlayerIndex: responderId,
+        pendingEffects: dispute.effectSnapshot
+          ? {
+              forcedDrawCount: dispute.effectSnapshot.drawAmount,
+              skipNextPlayer: dispute.effectSnapshot.skip,
+            }
+          : state.pendingEffects,
+        turnPhase: state.pendingEffects.forcedDrawCount > 0 ? "must-draw" : "waiting",
+        sevenDispute: null,
+      };
+    }
+  } else if (dispute.kind === "LAST_CARD") {
+    if (dispute.cancelled) {
+      // Last Card claim was cancelled - player loses their protection
+      const claimerId = dispute.lastCardClaimPlayerId!;
+      const newPlayers = state.players.map((p, i) =>
+        i === claimerId ? { ...p, declaredLastCard: false } : p
+      );
+      return {
+        ...state,
+        players: newPlayers,
+        sevenDispute: null,
+        lastCardClaim: null,
+        turnPhase: "playing", // Continue current player's turn
+      };
+    } else {
+      // Last Card claim NOT cancelled - claim remains valid
+      return {
+        ...state,
+        sevenDispute: null,
+        turnPhase: "playing", // Continue current player's turn
+      };
+    }
+  }
+
+  return state;
+}
+
+/**
+ * Get status message for Seven Dispute state
+ */
+export function getSevenDisputeStatusMessage(state: GameState): string | null {
+  if (!state.sevenDispute) return null;
+
+  const dispute = state.sevenDispute;
+  const responderName = `Player ${dispute.responderPlayerId + 1}`;
+  const statusWord = dispute.cancelled ? "CANCELLED" : "NOT CANCELLED";
+
+  if (dispute.kind === "EFFECT") {
+    const effectDesc =
+      dispute.effectSnapshot?.skip
+        ? "Skip"
+        : `+${dispute.effectSnapshot?.drawAmount || 0}`;
+    return `7 Dispute (${effectDesc} ${statusWord}) - ${responderName}: Play 7 or Accept`;
+  } else {
+    return `7 Dispute (Last Card ${statusWord}) - ${responderName}: Play 7 or Accept`;
+  }
 }

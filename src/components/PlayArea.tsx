@@ -7,7 +7,7 @@ interface PlayAreaProps {
   topCard: CardType | null;
   drawPileCount: number;
   chosenSuit: Suit | null;
-  onDrawClick: () => void;
+  onDrawClick?: () => void;
   canDraw: boolean;
 }
 
