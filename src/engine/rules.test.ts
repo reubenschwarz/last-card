@@ -17,6 +17,7 @@ import {
   canDeclareLastCard,
   getTopCard,
   getTargetSuit,
+  getNextPlayerIndex,
   // Response phase functions
   isInResponsePhase,
   applyResolve,
@@ -34,9 +35,23 @@ import {
   applySevenCancelLastCard,
   applySevenDisputePlay,
   applySevenDisputeAccept,
+  // Jack response functions
+  isInJackResponse,
+  canRespondToJack,
+  getLegalJackCancels,
+  canCancelJack,
+  applyJackAccept,
+  applyJackCancel,
+  // Ace response functions
+  isInAceResponse,
+  canRespondToAce,
+  getLegalAceCancels,
+  canCancelAce,
+  applyAceAccept,
+  applyAceCancel,
 } from "./rules";
 import { createSeededRng } from "./deck";
-import { Card, GameState, PlayerType, Suit, cardEquals } from "./types";
+import { Card, GameState, PlayDirection, PlayerType, Suit, cardEquals } from "./types";
 
 // Helper to create a card
 const card = (rank: string, suit: Suit): Card => ({ rank: rank as Card["rank"], suit });
@@ -56,6 +71,8 @@ function createTestState(overrides: Partial<GameState> = {}): GameState {
     turnPhase: "playing",
     winner: null,
     lastPlayWasSpecial: false,
+    // Direction of play
+    direction: "CW" as PlayDirection,
     // Response phase state
     responsePhase: null,
     responseChainRank: null,
@@ -64,6 +81,9 @@ function createTestState(overrides: Partial<GameState> = {}): GameState {
     sevenDispute: null,
     lastCardClaim: null,
     turnNumber: 0,
+    // Jack and Ace response windows
+    jackResponse: null,
+    aceResponse: null,
   };
 
   return { ...defaultState, ...overrides };
@@ -1694,12 +1714,15 @@ function createTestStateNPlayers(
     turnPhase: "playing",
     winner: null,
     lastPlayWasSpecial: false,
+    direction: "CW" as PlayDirection,
     responsePhase: null,
     responseChainRank: null,
     respondingPlayerIndex: null,
     sevenDispute: null,
     lastCardClaim: null,
     turnNumber: 0,
+    jackResponse: null,
+    aceResponse: null,
   };
 
   return { ...defaultState, ...overrides };
@@ -2089,5 +2112,405 @@ describe("Regression: 2-Player Behavior Unchanged", () => {
 
     expect(isInSevenDispute(state)).toBe(true);
     expect(state.sevenDispute?.responderPlayerId).toBe(0);
+  });
+});
+
+// ============================================
+// Jack Power Card Tests
+// ============================================
+
+describe("Jack Power Card (Direction Switch)", () => {
+  describe("2-Player Games - Jack has no effect", () => {
+    it("should NOT activate Jack in 2-player game", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      // Play activated Jack
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: true });
+
+      // Should NOT enter Jack response window in 2-player
+      expect(isInJackResponse(state)).toBe(false);
+      expect(state.jackResponse).toBeNull();
+      expect(state.turnPhase).toBe("can-end");
+    });
+
+    it("should treat Jack as normal card in 2-player game", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      // Jack is legal by suit
+      const plays = getLegalPlays(state, 0);
+      expect(plays.some((p) => p.play.cards[0].rank === "J")).toBe(true);
+    });
+  });
+
+  describe("3+ Player Games - Jack activates direction switch", () => {
+    it("should enter Jack response window when activated Jack is played", () => {
+      let state = createTestStateNPlayers(3);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: true });
+
+      expect(isInJackResponse(state)).toBe(true);
+      expect(state.jackResponse).not.toBeNull();
+      expect(state.jackResponse?.jackPlayerId).toBe(0);
+      expect(state.jackResponse?.responderPlayerId).toBe(1);
+      expect(state.jackResponse?.jackSuit).toBe("hearts");
+    });
+
+    it("should NOT enter Jack response when activation is OFF", () => {
+      let state = createTestStateNPlayers(3);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: false });
+
+      expect(isInJackResponse(state)).toBe(false);
+      expect(state.jackResponse).toBeNull();
+    });
+
+    it("should flip direction when responder accepts", () => {
+      let state = createTestStateNPlayers(4);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      expect(state.direction).toBe("CW");
+
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: true });
+      expect(isInJackResponse(state)).toBe(true);
+
+      // P1 accepts
+      state = applyJackAccept(state);
+
+      expect(isInJackResponse(state)).toBe(false);
+      expect(state.direction).toBe("CCW");
+      // After accept, turn goes to next player in NEW direction from responder
+      // Responder was P1, new direction is CCW, so next is P0
+      expect(state.currentPlayerIndex).toBe(0);
+    });
+
+    it("should NOT flip direction when responder cancels with 7", () => {
+      let state = createTestStateNPlayers(4);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.players[1].hand = [card("7", "hearts"), card("8", "spades")];
+      state.discardPile = [card("6", "hearts")];
+
+      expect(state.direction).toBe("CW");
+
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: true });
+
+      // P1 can cancel with 7 of hearts (matches Jack suit)
+      expect(canCancelJack(state, 1)).toBe(true);
+      const cancels = getLegalJackCancels(state, 1);
+      expect(cancels).toContainEqual(card("7", "hearts"));
+
+      state = applyJackCancel(state, card("7", "hearts"));
+
+      expect(isInJackResponse(state)).toBe(false);
+      expect(state.direction).toBe("CW"); // Direction unchanged
+      // Next turn goes to P2 (original direction)
+      expect(state.currentPlayerIndex).toBe(2);
+    });
+
+    it("should NOT flip direction when responder cancels with another Jack", () => {
+      let state = createTestStateNPlayers(4);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.players[1].hand = [card("J", "spades"), card("8", "diamonds")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: true });
+
+      // P1 can cancel with any Jack
+      expect(canCancelJack(state, 1)).toBe(true);
+      const cancels = getLegalJackCancels(state, 1);
+      expect(cancels).toContainEqual(card("J", "spades"));
+
+      state = applyJackCancel(state, card("J", "spades"));
+
+      expect(isInJackResponse(state)).toBe(false);
+      expect(state.direction).toBe("CW"); // Direction unchanged
+    });
+
+    it("should respect direction in subsequent turn calculations", () => {
+      let state = createTestStateNPlayers(4);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      // Play Jack, P1 accepts, direction flips to CCW
+      state = applyPlay(state, { cards: [card("J", "hearts")], activateEffect: true });
+      state = applyJackAccept(state);
+
+      expect(state.direction).toBe("CCW");
+
+      // Now test that getNextPlayerIndex respects CCW
+      expect(getNextPlayerIndex(state, 0)).toBe(3); // CCW: 0 -> 3
+      expect(getNextPlayerIndex(state, 1)).toBe(0); // CCW: 1 -> 0
+      expect(getNextPlayerIndex(state, 3)).toBe(2); // CCW: 3 -> 2
+    });
+
+    it("should NOT allow multi-Jack when activated", () => {
+      // Note: The rule states activated Jack must be exactly 1 card
+      // Multi-Jack is only allowed when deactivated
+      let state = createTestStateNPlayers(3);
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("J", "hearts"), card("J", "spades"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      // Multi-Jack play should NOT enter Jack response (only single Jack activates)
+      state = applyPlay(state, {
+        cards: [card("J", "hearts"), card("J", "spades")],
+        activateEffect: true,
+      });
+
+      // Multi-card plays don't trigger Jack response (activation requires single Jack)
+      expect(isInJackResponse(state)).toBe(false);
+    });
+  });
+});
+
+// ============================================
+// Ace Response Window Tests
+// ============================================
+
+describe("Ace Response Window", () => {
+  describe("Ace Legality (Non-Wild)", () => {
+    it("should allow Ace when suit matches", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      const plays = getLegalPlays(state, 0);
+      expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
+    });
+
+    it("should NOT allow Ace when suit does not match", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "spades"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      const plays = getLegalPlays(state, 0);
+      expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
+    });
+
+    it("should allow Ace-on-Ace regardless of suit", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "spades"), card("3", "clubs")];
+      state.discardPile = [card("A", "hearts")];
+
+      const plays = getLegalPlays(state, 0);
+      expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
+    });
+  });
+
+  describe("Ace Activation and Response Window", () => {
+    it("should enter Ace response window when activated Ace is played", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+
+      expect(isInAceResponse(state)).toBe(true);
+      expect(state.aceResponse).not.toBeNull();
+      expect(state.aceResponse?.acePlayerId).toBe(0);
+      expect(state.aceResponse?.responderPlayerId).toBe(1);
+      expect(state.aceResponse?.aceSuit).toBe("hearts");
+      expect(state.aceResponse?.chosenSuit).toBe("clubs");
+    });
+
+    it("should NOT enter Ace response when no chosenSuit", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      // Play Ace without choosing suit (deactivated)
+      state = applyPlay(state, { cards: [card("A", "hearts")] });
+
+      expect(isInAceResponse(state)).toBe(false);
+    });
+
+    it("should set suit when responder accepts", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+      expect(isInAceResponse(state)).toBe(true);
+
+      state = applyAceAccept(state);
+
+      expect(isInAceResponse(state)).toBe(false);
+      expect(state.chosenSuit).toBe("clubs");
+      expect(state.currentPlayerIndex).toBe(1); // Responder takes their turn
+      expect(state.turnPhase).toBe("waiting");
+    });
+
+    it("should allow cancel with 7 of Ace's suit (not chosen suit)", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.players[1].hand = [card("7", "hearts"), card("8", "spades")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+
+      // P1 can cancel with 7 of hearts (Ace's suit), not 7 of clubs (chosen suit)
+      expect(canCancelAce(state, 1)).toBe(true);
+      const cancels = getLegalAceCancels(state, 1);
+      expect(cancels).toContainEqual(card("7", "hearts"));
+    });
+
+    it("should NOT allow cancel with 7 of chosen suit", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.players[1].hand = [card("7", "clubs"), card("8", "spades")]; // 7 of clubs, not hearts
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+
+      // P1 cannot cancel - only 7 of hearts (Ace's suit) works
+      expect(canCancelAce(state, 1)).toBe(false);
+    });
+
+    it("should enter 7 dispute when Ace is cancelled", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.players[1].hand = [card("7", "hearts"), card("8", "spades")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+      state = applyAceCancel(state, card("7", "hearts"));
+
+      expect(isInAceResponse(state)).toBe(false);
+      expect(isInSevenDispute(state)).toBe(true);
+      expect(state.sevenDispute?.kind).toBe("ACE_SUIT");
+      expect(state.sevenDispute?.cancelled).toBe(true);
+      expect(state.sevenDispute?.aceSuitSnapshot?.aceSuit).toBe("hearts");
+      expect(state.sevenDispute?.aceSuitSnapshot?.chosenSuit).toBe("clubs");
+    });
+
+    it("should resolve Ace dispute: cancelled means Ace suit is effective", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.players[1].hand = [card("7", "hearts"), card("8", "spades")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+      state = applyAceCancel(state, card("7", "hearts"));
+
+      // P0 accepts the dispute (cancelled = true)
+      state = applySevenDisputeAccept(state);
+
+      expect(isInSevenDispute(state)).toBe(false);
+      expect(state.chosenSuit).toBe("hearts"); // Ace's printed suit, not clubs
+    });
+
+    it("should resolve Ace dispute: not cancelled means chosen suit is effective", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      // P0 has Ace and a separate 7 to counter with
+      state.players[0].hand = [card("A", "hearts"), card("7", "diamonds"), card("3", "clubs")];
+      state.players[1].hand = [card("7", "hearts"), card("8", "spades")];
+      state.discardPile = [card("6", "hearts")];
+
+      state = applyPlay(state, { cards: [card("A", "hearts")], chosenSuit: "clubs" });
+      state = applyAceCancel(state, card("7", "hearts"));
+
+      // During 7 dispute, any 7 can be played (not just matching suit)
+      // P0 counters with their 7 of diamonds
+      state = applySevenDisputePlay(state, card("7", "diamonds"));
+      expect(state.sevenDispute?.cancelled).toBe(false);
+
+      // P1 accepts
+      state = applySevenDisputeAccept(state);
+
+      expect(isInSevenDispute(state)).toBe(false);
+      expect(state.chosenSuit).toBe("clubs"); // Destination suit stands
+    });
+  });
+});
+
+// ============================================
+// Direction Respects All Mechanics
+// ============================================
+
+describe("Direction Affects All Mechanics", () => {
+  it("should use CCW direction for 2/5/10 response chains", () => {
+    let state = createTestStateNPlayers(4, { direction: "CCW" });
+    state = confirmHandoff(state);
+    state.players[0].hand = [card("2", "hearts"), card("3", "clubs")];
+    state.discardPile = [card("6", "hearts")];
+
+    state = applyPlay(state, { cards: [card("2", "hearts")] });
+
+    // In CCW, next player after 0 is 3
+    expect(state.respondingPlayerIndex).toBe(3);
+  });
+
+  it("should use CCW direction for 7 dispute pass-along", () => {
+    let state = createTestStateNPlayers(4, { direction: "CCW" });
+    state = confirmHandoff(state);
+    state.players[0].hand = [card("2", "hearts"), card("3", "clubs")];
+    state.players[3].hand = [card("7", "hearts"), card("8", "spades")];
+    state.discardPile = [card("6", "hearts")];
+
+    state = applyPlay(state, { cards: [card("2", "hearts")] });
+    expect(state.respondingPlayerIndex).toBe(3);
+
+    state = applySevenCancelEffect(state, card("7", "hearts"));
+
+    // Next responder in CCW from 3 is 2
+    expect(state.sevenDispute?.responderPlayerId).toBe(2);
+  });
+
+  it("should use CCW direction for turn advancement", () => {
+    let state = createTestStateNPlayers(4, { direction: "CCW" });
+    state = confirmHandoff(state);
+    state.players[0].hand = [card("6", "hearts"), card("3", "clubs")];
+    state.discardPile = [card("6", "diamonds")];
+
+    state = applyPlay(state, { cards: [card("6", "hearts")] });
+    state = nextTurn(state);
+
+    // CCW from 0 is 3
+    expect(state.currentPlayerIndex).toBe(3);
+  });
+
+  it("should use direction for last card claim eligibility", () => {
+    let state = createTestStateNPlayers(4, { direction: "CCW" });
+    state = confirmHandoff(state);
+    state.players[0].hand = [card("6", "hearts"), card("3", "hearts")];
+    state.players[3].hand = [card("7", "hearts"), card("8", "spades")];
+    state.discardPile = [card("6", "diamonds")];
+    state.turnNumber = 0;
+
+    // P0 declares last card
+    state = declareLastCard(state);
+    state = applyPlay(state, { cards: [card("6", "hearts")] });
+    state = nextTurn(state);
+
+    // In CCW, P3 is the immediate next player and can challenge
+    expect(state.currentPlayerIndex).toBe(3);
+    expect(canPlaySevenCancelLastCard(state, 3)).toBe(true);
   });
 });

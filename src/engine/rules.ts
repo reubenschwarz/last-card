@@ -467,13 +467,96 @@ export function applyPlay(state: GameState, play: Play): GameState {
   // Check for win
   const winner = newHand.length === 0 ? playerId : null;
 
-  // Determine chosen suit for Ace plays
+  // Get the last card played (top of discard after this play)
   const lastCard = play.cards[play.cards.length - 1];
+
+  // Determine chosen suit for Ace plays
   const newChosenSuit = lastCard.rank === "A" ? (play.chosenSuit ?? null) : null;
 
   // Determine if we enter response phase (for 2/5/10 effects)
   const nextPlayerIndex = getNextPlayerIndex(state, playerId);
   const shouldEnterResponsePhase = hasSpecialEffect && winner === null;
+
+  // Check for activated Jack (3+ players only, single Jack with activation ON)
+  const playerCount = state.players.length;
+  const isActivatedJack =
+    playerCount >= 3 &&
+    shouldActivate &&
+    play.cards.length === 1 &&
+    lastCard.rank === "J" &&
+    winner === null;
+
+  // Check for activated Ace (single Ace with activation ON and chosenSuit set)
+  const isActivatedAce =
+    shouldActivate &&
+    play.cards.length === 1 &&
+    lastCard.rank === "A" &&
+    play.chosenSuit !== undefined &&
+    winner === null;
+
+  // Handle activated Jack - enter Jack response window
+  if (isActivatedJack) {
+    // Responder is next player in ORIGINAL direction (before flip)
+    const jackResponse: JackResponse = {
+      jackPlayerId: playerId,
+      responderPlayerId: nextPlayerIndex,
+      jackSuit: lastCard.suit,
+    };
+
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      chosenSuit: null,
+      pendingEffects: {
+        forcedDrawCount: 0,
+        skipNextPlayer: false,
+      },
+      turnPhase: "can-end",
+      winner,
+      lastPlayWasSpecial: false,
+      responsePhase: null,
+      responseChainRank: null,
+      respondingPlayerIndex: null,
+      sevenDispute: null,
+      lastCardClaim: state.lastCardClaim,
+      turnNumber: state.turnNumber,
+      jackResponse,
+      aceResponse: null,
+    };
+  }
+
+  // Handle activated Ace - enter Ace response window
+  if (isActivatedAce) {
+    const aceResponse: AceResponse = {
+      acePlayerId: playerId,
+      responderPlayerId: nextPlayerIndex,
+      aceSuit: lastCard.suit,
+      chosenSuit: play.chosenSuit!,
+    };
+
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      chosenSuit: play.chosenSuit!, // Tentatively set the chosen suit
+      pendingEffects: {
+        forcedDrawCount: 0,
+        skipNextPlayer: false,
+      },
+      turnPhase: "can-end",
+      winner,
+      lastPlayWasSpecial: false,
+      responsePhase: null,
+      responseChainRank: null,
+      respondingPlayerIndex: null,
+      sevenDispute: null,
+      lastCardClaim: state.lastCardClaim,
+      turnNumber: state.turnNumber,
+      jackResponse: null,
+      aceResponse,
+    };
+  }
 
   if (shouldEnterResponsePhase) {
     // Enter response phase - next player can respond
@@ -1361,6 +1444,30 @@ export function applySevenDisputeAccept(state: GameState): GameState {
         turnPhase: "playing", // Continue current player's turn
       };
     }
+  } else if (dispute.kind === "ACE_SUIT") {
+    const snapshot = dispute.aceSuitSnapshot!;
+    if (dispute.cancelled) {
+      // Ace suit change was cancelled - effective suit is the Ace's printed suit
+      // Next turn goes to player after the last 7 played
+      const nextPlayer = getNextPlayerIndex(state, dispute.responderPlayerId);
+      return {
+        ...state,
+        chosenSuit: snapshot.aceSuit, // Ace's printed suit becomes effective
+        currentPlayerIndex: nextPlayer,
+        sevenDispute: null,
+        turnPhase: "waiting",
+      };
+    } else {
+      // Ace suit change NOT cancelled - destination suit stands
+      const nextPlayer = getNextPlayerIndex(state, dispute.responderPlayerId);
+      return {
+        ...state,
+        chosenSuit: snapshot.chosenSuit, // Destination suit becomes effective
+        currentPlayerIndex: nextPlayer,
+        sevenDispute: null,
+        turnPhase: "waiting",
+      };
+    }
   }
 
   return state;
@@ -1382,7 +1489,266 @@ export function getSevenDisputeStatusMessage(state: GameState): string | null {
         ? "Skip"
         : `+${dispute.effectSnapshot?.drawAmount || 0}`;
     return `7 Dispute (${effectDesc} ${statusWord}) - ${responderName}: Play 7 or Accept`;
+  } else if (dispute.kind === "ACE_SUIT") {
+    return `7 Dispute (Ace Suit Change ${statusWord}) - ${responderName}: Play 7 or Accept`;
   } else {
     return `7 Dispute (Last Card ${statusWord}) - ${responderName}: Play 7 or Accept`;
   }
+}
+
+// ============================================
+// Jack Response Window Functions (3+ players)
+// ============================================
+
+/**
+ * Check if we're in an active Jack response window
+ */
+export function isInJackResponse(state: GameState): boolean {
+  return state.jackResponse !== null;
+}
+
+/**
+ * Check if a player can respond to a Jack (either accept or cancel)
+ */
+export function canRespondToJack(state: GameState, playerId: number): boolean {
+  if (!state.jackResponse) return false;
+  return state.jackResponse.responderPlayerId === playerId;
+}
+
+/**
+ * Get legal cards for canceling a Jack response
+ * Can cancel with: 7 of the Jack's suit, OR any other Jack
+ */
+export function getLegalJackCancels(state: GameState, playerId: number): Card[] {
+  if (!canRespondToJack(state, playerId)) return [];
+
+  const player = state.players[playerId];
+  const jackSuit = state.jackResponse!.jackSuit;
+
+  return player.hand.filter(
+    (c) =>
+      // 7 matching the Jack's suit
+      (c.rank === "7" && c.suit === jackSuit) ||
+      // Any other Jack
+      c.rank === "J"
+  );
+}
+
+/**
+ * Check if a player can cancel the Jack response
+ */
+export function canCancelJack(state: GameState, playerId: number): boolean {
+  return getLegalJackCancels(state, playerId).length > 0;
+}
+
+/**
+ * Apply "Accept" to a Jack response - direction flips, responder's turn is skipped
+ */
+export function applyJackAccept(state: GameState): GameState {
+  if (!state.jackResponse) return state;
+
+  const responderId = state.jackResponse.responderPlayerId;
+
+  // Flip direction
+  const newDirection: PlayDirection = state.direction === "CW" ? "CCW" : "CW";
+
+  // The responder's turn is consumed by accepting
+  // Next turn goes to the player after responder in the NEW direction
+  // We need to create a temporary state with new direction to calculate correctly
+  const tempState = { ...state, direction: newDirection };
+  const nextPlayerAfterResponder = getNextPlayerIndex(tempState, responderId);
+
+  return {
+    ...state,
+    direction: newDirection,
+    currentPlayerIndex: nextPlayerAfterResponder,
+    turnPhase: "waiting",
+    jackResponse: null,
+    // Preserve other state
+    lastCardClaim: state.lastCardClaim,
+    turnNumber: state.turnNumber + 1, // Responder's "turn" was consumed
+  };
+}
+
+/**
+ * Apply "Cancel" to a Jack response - play a 7 or Jack to prevent direction flip
+ */
+export function applyJackCancel(state: GameState, card: Card): GameState {
+  if (!state.jackResponse) return state;
+
+  const responderId = state.jackResponse.responderPlayerId;
+  const responder = state.players[responderId];
+  const jackSuit = state.jackResponse.jackSuit;
+
+  // Verify the card is a legal cancel (7 of Jack's suit or any Jack)
+  const isLegalCancel =
+    (card.rank === "7" && card.suit === jackSuit) || card.rank === "J";
+
+  if (!isLegalCancel) return state;
+
+  // Remove the card from responder's hand
+  const newHand = responder.hand.filter((c) => !cardEquals(c, card));
+
+  // Add card to discard pile
+  const newDiscardPile = [...state.discardPile, card];
+
+  // Update players
+  const newPlayers = state.players.map((p, i) =>
+    i === responderId ? { ...p, hand: newHand } : p
+  );
+
+  // Check for immediate win
+  const winner = newHand.length === 0 ? responderId : null;
+
+  if (winner !== null) {
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      winner,
+      turnPhase: "game-over",
+      jackResponse: null,
+      chosenSuit: null, // Clear any suit override
+    };
+  }
+
+  // Direction stays the same (cancel succeeded)
+  // Responder's turn is consumed; next turn proceeds in ORIGINAL direction
+  const nextPlayerAfterResponder = getNextPlayerIndex(state, responderId);
+
+  return {
+    ...state,
+    players: newPlayers,
+    discardPile: newDiscardPile,
+    chosenSuit: null, // Clear suit override after 7 or Jack
+    currentPlayerIndex: nextPlayerAfterResponder,
+    turnPhase: "waiting",
+    jackResponse: null,
+    turnNumber: state.turnNumber + 1, // Responder's turn was consumed
+  };
+}
+
+// ============================================
+// Ace Response Window Functions
+// ============================================
+
+/**
+ * Check if we're in an active Ace response window
+ */
+export function isInAceResponse(state: GameState): boolean {
+  return state.aceResponse !== null;
+}
+
+/**
+ * Check if a player can respond to an Ace suit change
+ */
+export function canRespondToAce(state: GameState, playerId: number): boolean {
+  if (!state.aceResponse) return false;
+  return state.aceResponse.responderPlayerId === playerId;
+}
+
+/**
+ * Get legal cards for canceling an Ace response
+ * Can only cancel with 7 of the Ace's PRINTED suit (not the chosen suit)
+ */
+export function getLegalAceCancels(state: GameState, playerId: number): Card[] {
+  if (!canRespondToAce(state, playerId)) return [];
+
+  const player = state.players[playerId];
+  const aceSuit = state.aceResponse!.aceSuit;
+
+  return player.hand.filter((c) => c.rank === "7" && c.suit === aceSuit);
+}
+
+/**
+ * Check if a player can cancel the Ace response
+ */
+export function canCancelAce(state: GameState, playerId: number): boolean {
+  return getLegalAceCancels(state, playerId).length > 0;
+}
+
+/**
+ * Apply "Accept" to an Ace response - suit change stands, responder takes normal turn
+ */
+export function applyAceAccept(state: GameState): GameState {
+  if (!state.aceResponse) return state;
+
+  const responderId = state.aceResponse.responderPlayerId;
+  const chosenSuit = state.aceResponse.chosenSuit;
+
+  // Suit change stands - responder now takes their normal turn
+  return {
+    ...state,
+    chosenSuit: chosenSuit,
+    currentPlayerIndex: responderId,
+    turnPhase: "waiting", // Responder starts their turn
+    aceResponse: null,
+  };
+}
+
+/**
+ * Apply "Cancel" to an Ace response - play 7 of Ace's suit, enter 7 dispute
+ */
+export function applyAceCancel(state: GameState, card: Card): GameState {
+  if (!state.aceResponse) return state;
+
+  const responderId = state.aceResponse.responderPlayerId;
+  const responder = state.players[responderId];
+  const aceSnapshot = state.aceResponse;
+
+  // Verify the card is a 7 matching the Ace's suit
+  if (card.rank !== "7" || card.suit !== aceSnapshot.aceSuit) {
+    return state;
+  }
+
+  // Remove the 7 from responder's hand
+  const newHand = responder.hand.filter((c) => !cardEquals(c, card));
+
+  // Add card to discard pile
+  const newDiscardPile = [...state.discardPile, card];
+
+  // Update players
+  const newPlayers = state.players.map((p, i) =>
+    i === responderId ? { ...p, hand: newHand } : p
+  );
+
+  // Check for immediate win
+  const winner = newHand.length === 0 ? responderId : null;
+
+  if (winner !== null) {
+    return {
+      ...state,
+      players: newPlayers,
+      discardPile: newDiscardPile,
+      winner,
+      turnPhase: "game-over",
+      aceResponse: null,
+      sevenDispute: null,
+      chosenSuit: null,
+    };
+  }
+
+  // Enter 7 dispute for Ace suit change
+  const nextResponder = getNextPlayerIndex(state, responderId);
+
+  const sevenDispute: SevenDispute = {
+    kind: "ACE_SUIT",
+    aceSuitSnapshot: {
+      acePlayerId: aceSnapshot.acePlayerId,
+      aceSuit: aceSnapshot.aceSuit,
+      chosenSuit: aceSnapshot.chosenSuit,
+    },
+    cancelled: true, // First 7 cancels the suit change
+    responderPlayerId: nextResponder,
+  };
+
+  return {
+    ...state,
+    players: newPlayers,
+    discardPile: newDiscardPile,
+    chosenSuit: null, // Temporarily clear during dispute
+    aceResponse: null,
+    sevenDispute,
+    turnPhase: "playing", // Active during dispute
+  };
 }
