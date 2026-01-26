@@ -148,10 +148,35 @@ describe("Basic Legality Rules", () => {
   });
 });
 
-describe("Ace (Wild) Rules", () => {
-  it("should allow playing an Ace on any card", () => {
+describe("Ace Rules (Non-Wild)", () => {
+  it("should allow playing an Ace when suit matches", () => {
+    // Ace of hearts can be played on 6 of hearts (suit matches)
+    const state = setPlayerHand(
+      createTestState({ discardPile: [card("6", "hearts")] }),
+      0,
+      [card("A", "hearts"), card("3", "clubs")]
+    );
+
+    const plays = getLegalPlays(state, 0);
+    expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
+  });
+
+  it("should NOT allow playing an Ace when suit does not match", () => {
+    // Ace of hearts cannot be played on 6 of diamonds (no match)
     const state = setPlayerHand(
       createTestState({ discardPile: [card("6", "diamonds")] }),
+      0,
+      [card("A", "hearts"), card("3", "clubs")]
+    );
+
+    const plays = getLegalPlays(state, 0);
+    expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
+  });
+
+  it("should allow Ace-on-Ace regardless of suit", () => {
+    // Ace of hearts can be played on Ace of diamonds (Ace-on-Ace)
+    const state = setPlayerHand(
+      createTestState({ discardPile: [card("A", "diamonds")] }),
       0,
       [card("A", "hearts"), card("3", "clubs")]
     );
@@ -161,8 +186,9 @@ describe("Ace (Wild) Rules", () => {
   });
 
   it("should generate all 4 suit choices when playing an Ace", () => {
+    // Ace of hearts playable on 6 of hearts (suit matches)
     const state = setPlayerHand(
-      createTestState({ discardPile: [card("6", "diamonds")] }),
+      createTestState({ discardPile: [card("6", "hearts")] }),
       0,
       [card("A", "hearts")]
     );
@@ -179,8 +205,9 @@ describe("Ace (Wild) Rules", () => {
   });
 
   it("should set chosenSuit after playing an Ace", () => {
+    // Ace of hearts playable on 6 of hearts
     let state = setPlayerHand(
-      createTestState({ discardPile: [card("6", "diamonds")] }),
+      createTestState({ discardPile: [card("6", "hearts")] }),
       0,
       [card("A", "hearts"), card("3", "clubs")]
     );
@@ -191,8 +218,9 @@ describe("Ace (Wild) Rules", () => {
   });
 
   it("should use chosenSuit for next player's moves", () => {
+    // Ace of hearts playable on 6 of hearts
     let state = setPlayerHand(
-      createTestState({ discardPile: [card("6", "diamonds")] }),
+      createTestState({ discardPile: [card("6", "hearts")] }),
       0,
       [card("A", "hearts"), card("3", "clubs")]
     );
@@ -729,14 +757,14 @@ describe("Example Scenario from Spec", () => {
     state = nextTurn(state);
     state = confirmHandoff(state);
 
-    // Step 4: P2 plays 4♠
-    expect(isPlayLegal(state, 1, { cards: [card("4", "spades")] })).toBe(true);
-    state = applyPlay(state, { cards: [card("4", "spades")] });
-    expect(getTopCard(state)).toEqual(card("4", "spades"));
+    // Step 4: P2 plays 3♥ (matches 4♥ by suit)
+    expect(isPlayLegal(state, 1, { cards: [card("3", "hearts")] })).toBe(true);
+    state = applyPlay(state, { cards: [card("3", "hearts")] });
+    expect(getTopCard(state)).toEqual(card("3", "hearts"));
     state = nextTurn(state);
     state = confirmHandoff(state);
 
-    // Step 5: P1 plays A♥ and chooses suit ♦
+    // Step 5: P1 plays A♥ and chooses suit ♦ (Ace matches hearts suit)
     expect(isPlayLegal(state, 0, { cards: [card("A", "hearts")], chosenSuit: "diamonds" })).toBe(
       true
     );
@@ -746,7 +774,7 @@ describe("Example Scenario from Spec", () => {
     state = nextTurn(state);
     state = confirmHandoff(state);
 
-    // Step 6: P2 plays A♣ and chooses suit ♣
+    // Step 6: P2 plays A♣ on A♥ (Ace-on-Ace is always legal) and chooses suit ♣
     expect(isPlayLegal(state, 1, { cards: [card("A", "clubs")], chosenSuit: "clubs" })).toBe(true);
     state = applyPlay(state, { cards: [card("A", "clubs")], chosenSuit: "clubs" });
     expect(state.chosenSuit).toBe("clubs");

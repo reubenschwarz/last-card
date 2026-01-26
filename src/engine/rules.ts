@@ -5,14 +5,17 @@
 
 import { createShuffledDeck } from "./deck";
 import {
+  AceResponse,
   Card,
   cardEquals,
   cardToString,
   GameState,
+  JackResponse,
   LastCardClaim,
   LegalPlay,
   PendingEffects,
   Play,
+  PlayDirection,
   PlayerState,
   PlayerType,
   Rank,
@@ -23,6 +26,17 @@ import {
 } from "./types";
 
 const INITIAL_HAND_SIZE = 7;
+
+/**
+ * Get the next player index respecting the current direction of play
+ */
+export function getNextPlayerIndex(state: GameState, fromIndex: number): number {
+  const playerCount = state.players.length;
+  if (state.direction === "CCW") {
+    return (fromIndex - 1 + playerCount) % playerCount;
+  }
+  return (fromIndex + 1) % playerCount;
+}
 
 /**
  * Initialize a new game with the specified number of players
@@ -81,6 +95,8 @@ export function initializeGame(
     turnPhase: "waiting", // Start in waiting phase for hotseat
     winner: null,
     lastPlayWasSpecial: false, // First card doesn't count as special play
+    // Direction of play (starts clockwise)
+    direction: "CW" as PlayDirection,
     // Right of Reply state
     responsePhase: null,
     responseChainRank: null,
@@ -89,6 +105,9 @@ export function initializeGame(
     sevenDispute: null,
     lastCardClaim: null,
     turnNumber: 0,
+    // Jack and Ace response windows
+    jackResponse: null,
+    aceResponse: null,
   };
 }
 
@@ -123,15 +142,17 @@ export function isSpecialCard(card: Card): boolean {
 /**
  * Check if a single card can be legally played on another
  * This checks the fundamental rule: suit must match OR rank must match
+ * Note: Aces are NOT wild - they follow the same rules as other cards,
+ * except Ace-on-Ace is always allowed regardless of suit.
  */
 function canCardBePlayed(
   cardToPlay: Card,
   targetSuit: Suit,
   targetRank: Rank,
-  hasForcedDraw: boolean
+  _hasForcedDraw: boolean
 ): boolean {
-  // Aces are wild and can be played on anything, UNLESS under forced draw
-  if (cardToPlay.rank === "A" && !hasForcedDraw) {
+  // Ace-on-Ace is always legal (regardless of suit)
+  if (cardToPlay.rank === "A" && targetRank === "A") {
     return true;
   }
 
@@ -450,9 +471,8 @@ export function applyPlay(state: GameState, play: Play): GameState {
   const lastCard = play.cards[play.cards.length - 1];
   const newChosenSuit = lastCard.rank === "A" ? (play.chosenSuit ?? null) : null;
 
-  // Determine if we enter response phase
-  const playerCount = state.players.length;
-  const nextPlayerIndex = (playerId + 1) % playerCount;
+  // Determine if we enter response phase (for 2/5/10 effects)
+  const nextPlayerIndex = getNextPlayerIndex(state, playerId);
   const shouldEnterResponsePhase = hasSpecialEffect && winner === null;
 
   if (shouldEnterResponsePhase) {
@@ -476,6 +496,9 @@ export function applyPlay(state: GameState, play: Play): GameState {
       sevenDispute: state.sevenDispute,
       lastCardClaim: state.lastCardClaim,
       turnNumber: state.turnNumber,
+      // Preserve Jack/Ace response windows
+      jackResponse: state.jackResponse,
+      aceResponse: state.aceResponse,
     };
   }
 
@@ -498,6 +521,9 @@ export function applyPlay(state: GameState, play: Play): GameState {
     sevenDispute: state.sevenDispute,
     lastCardClaim: state.lastCardClaim,
     turnNumber: state.turnNumber,
+    // Preserve Jack/Ace response windows
+    jackResponse: state.jackResponse,
+    aceResponse: state.aceResponse,
   };
 }
 
@@ -592,12 +618,11 @@ export function nextTurn(state: GameState): GameState {
     return state;
   }
 
-  const playerCount = state.players.length;
-  let nextIndex = (state.currentPlayerIndex + 1) % playerCount;
+  let nextIndex = getNextPlayerIndex(state, state.currentPlayerIndex);
 
   // Apply skip if pending
   if (state.pendingEffects.skipNextPlayer) {
-    nextIndex = (nextIndex + 1) % playerCount;
+    nextIndex = getNextPlayerIndex(state, nextIndex);
   }
 
   // Increment turn number
@@ -648,6 +673,7 @@ export function nextTurn(state: GameState): GameState {
     },
     turnPhase,
     lastPlayWasSpecial: false,
+    // Direction is preserved (not cleared)
     // Clear response phase when advancing turn
     responsePhase: null,
     responseChainRank: null,
@@ -656,6 +682,9 @@ export function nextTurn(state: GameState): GameState {
     sevenDispute: null, // Clear any dispute when turn ends
     lastCardClaim: newLastCardClaim,
     turnNumber: newTurnNumber,
+    // Clear Jack and Ace response windows when turn ends
+    jackResponse: null,
+    aceResponse: null,
   };
 }
 
@@ -951,9 +980,8 @@ export function applyDeflect(state: GameState, card: Card): GameState {
     };
   }
 
-  // Calculate next responding player
-  const playerCount = state.players.length;
-  const nextRespondingIndex = (respondingIndex + 1) % playerCount;
+  // Calculate next responding player (respects direction)
+  const nextRespondingIndex = getNextPlayerIndex(state, respondingIndex);
 
   return {
     ...state,
@@ -1105,9 +1133,8 @@ export function applySevenCancelEffect(state: GameState, card: Card): GameState 
   }
 
   // Identify the original attacker (who must resolve if not cancelled)
-  // In 2-player, this is the other player
-  const playerCount = state.players.length;
-  const attackerIndex = (respondingIndex + 1) % playerCount;
+  // In 2-player, this is the other player; in N-player, it's the next in direction
+  const attackerIndex = getNextPlayerIndex(state, respondingIndex);
 
   // Create Seven Dispute state
   const sevenDispute: SevenDispute = {
@@ -1257,9 +1284,8 @@ export function applySevenDisputePlay(state: GameState, card: Card): GameState {
     };
   }
 
-  // Toggle cancelled and switch responder
-  const playerCount = state.players.length;
-  const nextResponderId = (responderId + 1) % playerCount;
+  // Toggle cancelled and switch responder (respects direction)
+  const nextResponderId = getNextPlayerIndex(state, responderId);
 
   return {
     ...state,

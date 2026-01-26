@@ -46,9 +46,27 @@ export type ResponsePhase = "responding" | null;
 // Special ranks that can trigger response chains
 export type SpecialRank = "2" | "5" | "10";
 
+// Direction of play (for 3+ players with Jack power card)
+export type PlayDirection = "CW" | "CCW";
+
+// Jack response window state (for Jack power card)
+export interface JackResponse {
+  jackPlayerId: number; // Who played the Jack
+  responderPlayerId: number; // Who must respond (next player in ORIGINAL direction)
+  jackSuit: Suit; // The Jack's suit (for 7 cancel matching)
+}
+
+// Ace response window state (for Ace suit change)
+export interface AceResponse {
+  acePlayerId: number; // Who played the Ace
+  responderPlayerId: number; // Who must respond
+  aceSuit: Suit; // The Ace's printed suit (for 7 cancel matching)
+  chosenSuit: Suit; // The destination suit chosen
+}
+
 // Seven Dispute state for the 7-cancel mechanic
 export interface SevenDispute {
-  kind: "EFFECT" | "LAST_CARD";
+  kind: "EFFECT" | "LAST_CARD" | "ACE_SUIT";
   // For EFFECT disputes: snapshot of the effect being disputed
   effectSnapshot?: {
     drawAmount: number;
@@ -57,6 +75,12 @@ export interface SevenDispute {
   };
   // For LAST_CARD disputes: who made the claim being challenged
   lastCardClaimPlayerId?: number;
+  // For ACE_SUIT disputes: the Ace suit change being disputed
+  aceSuitSnapshot?: {
+    acePlayerId: number; // Who played the Ace
+    aceSuit: Suit; // The Ace's printed suit
+    chosenSuit: Suit; // The destination suit chosen
+  };
   cancelled: boolean; // Toggles with each 7 played
   responderPlayerId: number; // Who must respond next
 }
@@ -78,6 +102,9 @@ export interface GameState {
   winner: number | null; // Player ID who won, or null if game ongoing
   lastPlayWasSpecial: boolean; // Used for last card declaration restriction
 
+  // Direction of play (for 3+ players; Jacks can switch this)
+  direction: PlayDirection;
+
   // Right of Reply chain state
   responsePhase: ResponsePhase; // Whether we're in a response chain
   responseChainRank: SpecialRank | null; // Which special rank triggered the chain (2, 5, or 10)
@@ -87,6 +114,12 @@ export interface GameState {
   sevenDispute: SevenDispute | null; // Active 7 dispute, or null if none
   lastCardClaim: LastCardClaim | null; // Tracks last card declaration for 7 challenge window
   turnNumber: number; // Increments each turn, used for lastCardClaim expiry
+
+  // Jack response window (for Jack power card - 3+ players only)
+  jackResponse: JackResponse | null;
+
+  // Ace response window (for Ace suit change)
+  aceResponse: AceResponse | null;
 }
 
 export type TurnPhase =
