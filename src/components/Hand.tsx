@@ -11,6 +11,7 @@ interface HandProps {
   onDeselectCard: (card: CardType) => void;
   disabled?: boolean;
   highlightCards?: CardType[]; // Cards to highlight (e.g., legal deflections)
+  faceDown?: boolean; // Show all cards face-down (for AI opponents)
 }
 
 // Rank order for sorting (A high, then K, Q, J, 10-2)
@@ -56,6 +57,7 @@ export function Hand({
   onDeselectCard,
   disabled = false,
   highlightCards = [],
+  faceDown = false,
 }: HandProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
@@ -106,12 +108,13 @@ export function Hand({
             >
               <Card
                 card={card}
-                selected={isSelected(card)}
-                highlighted={isHighlighted(card)}
-                selectable={!disabled}
+                faceDown={faceDown}
+                selected={!faceDown && isSelected(card)}
+                highlighted={!faceDown && isHighlighted(card)}
+                selectable={!disabled && !faceDown}
                 onClick={() => handleCardClick(card)}
                 size="large"
-                magnified={isHovered}
+                magnified={!faceDown && isHovered}
               />
             </div>
           );

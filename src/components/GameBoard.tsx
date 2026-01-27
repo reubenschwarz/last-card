@@ -316,6 +316,7 @@ export function GameBoard() {
     } else if (inResponsePhase && gameState.respondingPlayerIndex !== null) {
       displayPlayerIndex = gameState.respondingPlayerIndex;
     }
+    const displayPlayerIsAi = getPlayerType(displayPlayerIndex) === "ai";
     const opponents = gameState.players.filter((_, i) => i !== displayPlayerIndex);
 
     // Check if a card can be used to deflect
@@ -645,6 +646,7 @@ export function GameBoard() {
                 onDeselectCard={() => {}}
                 disabled={false}
                 highlightCards={legalSevenDisputePlays}
+                faceDown={displayPlayerIsAi}
               />
             ) : inJackResponse ? (
               <Hand
@@ -654,6 +656,7 @@ export function GameBoard() {
                 onDeselectCard={() => {}}
                 disabled={false}
                 highlightCards={legalJackCancels}
+                faceDown={displayPlayerIsAi}
               />
             ) : inAceResponse ? (
               <Hand
@@ -663,6 +666,7 @@ export function GameBoard() {
                 onDeselectCard={() => {}}
                 disabled={false}
                 highlightCards={legalAceCancels}
+                faceDown={displayPlayerIsAi}
               />
             ) : canCancelLastCard ? (
               <Hand
@@ -678,6 +682,7 @@ export function GameBoard() {
                 onDeselectCard={deselectCard}
                 disabled={gameState.turnPhase === "must-draw"}
                 highlightCards={legalSevenCancelsLastCard}
+                faceDown={displayPlayerIsAi}
               />
             ) : inResponsePhase ? (
               <Hand
@@ -687,6 +692,7 @@ export function GameBoard() {
                 onDeselectCard={() => {}}
                 disabled={false}
                 highlightCards={responseHighlightCards}
+                faceDown={displayPlayerIsAi}
               />
             ) : (
               <Hand
@@ -695,6 +701,7 @@ export function GameBoard() {
                 onSelectCard={selectCard}
                 onDeselectCard={deselectCard}
                 disabled={gameState.turnPhase === "must-draw"}
+                faceDown={displayPlayerIsAi}
               />
             )}
           </div>
