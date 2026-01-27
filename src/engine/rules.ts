@@ -979,7 +979,8 @@ export function getLegalCancels(state: GameState): Card[] {
 
 /**
  * Apply "Resolve" - accept the pending effects
- * The responding player accepts the draw/skip and becomes the current player
+ * For forced draw (2/5): responding player becomes current and must draw
+ * For skip (10): responding player is skipped, next player becomes current
  */
 export function applyResolve(state: GameState): GameState {
   if (!isInResponsePhase(state) || state.respondingPlayerIndex === null) {
@@ -987,17 +988,36 @@ export function applyResolve(state: GameState): GameState {
   }
 
   const respondingIndex = state.respondingPlayerIndex;
+  const isSkip = state.pendingEffects.skipNextPlayer;
 
-  // End response phase and make the responding player the current player
-  // They will face the pending effects
+  if (isSkip) {
+    // Skip: the responder is skipped, advance to the next player after them
+    const nextPlayerIndex = getNextPlayerIndex(state, respondingIndex);
+    const nextPlayer = state.players[nextPlayerIndex];
+    // Check if next player has a last card penalty
+    const nextTurnPhase = nextPlayer.lastCardPenalty ? "must-draw" : "waiting";
+    return {
+      ...state,
+      currentPlayerIndex: nextPlayerIndex,
+      turnPhase: nextTurnPhase,
+      responsePhase: null,
+      responseChainRank: null,
+      respondingPlayerIndex: null,
+      pendingEffects: {
+        forcedDrawCount: 0,
+        skipNextPlayer: false,
+      },
+    };
+  }
+
+  // Forced draw: responder becomes current player and must draw
   return {
     ...state,
     currentPlayerIndex: respondingIndex,
-    turnPhase: state.pendingEffects.forcedDrawCount > 0 ? "must-draw" : "waiting",
+    turnPhase: "must-draw",
     responsePhase: null,
     responseChainRank: null,
     respondingPlayerIndex: null,
-    // Skip is consumed when resolving a 10 response
     pendingEffects: {
       ...state.pendingEffects,
       skipNextPlayer: false,

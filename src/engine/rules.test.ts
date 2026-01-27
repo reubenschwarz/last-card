@@ -983,11 +983,12 @@ describe("Right of Reply - Response Phase", () => {
       // Play 10
       state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
 
-      // Player 1 resolves
+      // Player 1 resolves (accepts being skipped)
       state = applyResolve(state);
 
       expect(isInResponsePhase(state)).toBe(false);
-      expect(state.currentPlayerIndex).toBe(1);
+      // Player 1 is skipped, so turn goes to next player (Player 0 in 2-player game)
+      expect(state.currentPlayerIndex).toBe(0);
       // Skip is consumed on resolve
       expect(state.pendingEffects.skipNextPlayer).toBe(false);
     });
@@ -1899,16 +1900,14 @@ describe("N-Player Skip Delaying Penalties", () => {
     state.discardPile = [{ rank: "6", suit: "hearts" }];
     state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
 
-    // P2 resolves the skip
+    // P2 resolves the skip (accepts being skipped)
+    // This automatically advances to P0 since P2 is skipped
     state = applyResolve(state);
-
-    // Turn should advance, skipping P2
-    state = nextTurn(state);
 
     // Now back to P0's turn with penalty still there
     expect(state.currentPlayerIndex).toBe(0);
     expect(state.players[0].lastCardPenalty).toBe(true);
-    expect(state.turnPhase).toBe("must-draw");
+    expect(state.turnPhase).toBe("must-draw"); // P0 has penalty, must draw
   });
 });
 
