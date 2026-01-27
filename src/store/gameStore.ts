@@ -221,6 +221,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       } else {
         // AI accepts the dispute outcome
         newState = applySevenDisputeAccept(gameState);
+        // After EFFECT dispute with cancelled=true, the turn should advance
+        if (newState.turnPhase === "can-end" && newState.winner === null) {
+          newState = nextTurn(newState);
+        }
       }
       set({ gameState: newState });
       return;
@@ -534,10 +538,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { gameState } = get();
     if (!gameState || !isInSevenDispute(gameState)) return;
 
-    const newState = applySevenDisputeAccept(gameState);
+    let newState = applySevenDisputeAccept(gameState);
 
-    // If game continues normally after accepting, may need to end turn
-    // This depends on the outcome
+    // After EFFECT dispute with cancelled=true, the turn should advance
+    // because both players have played their cards (original 2/5/10 and the 7 cancel)
+    if (newState.turnPhase === "can-end" && newState.winner === null) {
+      newState = nextTurn(newState);
+    }
+
     set({ gameState: newState });
   },
 
