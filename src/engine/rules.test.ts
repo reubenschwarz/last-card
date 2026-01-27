@@ -193,12 +193,26 @@ describe("Ace Rules (Non-Wild)", () => {
     expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
   });
 
-  it("should allow Ace-on-Ace regardless of suit", () => {
-    // Ace of hearts can be played on Ace of diamonds (Ace-on-Ace)
+  it("should NOT allow Ace-on-Ace by rank matching (prevents suit-change chaining)", () => {
+    // Ace of hearts CANNOT be played on Ace of diamonds just because both are Aces
+    // (prevents suit-change chaining where players keep playing Aces)
     const state = setPlayerHand(
       createTestState({ discardPile: [card("A", "diamonds")] }),
       0,
       [card("A", "hearts"), card("3", "clubs")]
+    );
+
+    const plays = getLegalPlays(state, 0);
+    // Ace of hearts doesn't match diamonds suit, so can't be played
+    expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
+  });
+
+  it("should allow Ace-on-Ace when suits match", () => {
+    // Ace of diamonds CAN be played on Ace of diamonds (suit matches)
+    const state = setPlayerHand(
+      createTestState({ discardPile: [card("A", "diamonds")] }),
+      0,
+      [card("A", "diamonds"), card("3", "clubs")]
     );
 
     const plays = getLegalPlays(state, 0);
@@ -728,12 +742,12 @@ describe("Example Scenario from Spec", () => {
       card("K", "spades"),
     ]);
 
-    // P2 hand: 9♦, 9♣, 4♠, A♣, 3♣, 3♥
+    // P2 hand: 9♦, 9♣, 4♠, A♦, 3♣, 3♥
     state = setPlayerHand(state, 1, [
       card("9", "diamonds"),
       card("9", "clubs"),
       card("4", "spades"),
-      card("A", "clubs"),
+      card("A", "diamonds"),
       card("3", "clubs"),
       card("3", "hearts"),
     ]);
@@ -794,9 +808,11 @@ describe("Example Scenario from Spec", () => {
     state = nextTurn(state);
     state = confirmHandoff(state);
 
-    // Step 6: P2 plays A♣ on A♥ (Ace-on-Ace is always legal) and chooses suit ♣
-    expect(isPlayLegal(state, 1, { cards: [card("A", "clubs")], chosenSuit: "clubs" })).toBe(true);
-    state = applyPlay(state, { cards: [card("A", "clubs")], chosenSuit: "clubs" });
+    // Step 6: P2 plays A♦ (matches effective suit diamonds) and chooses suit ♣
+    expect(isPlayLegal(state, 1, { cards: [card("A", "diamonds")], chosenSuit: "clubs" })).toBe(
+      true
+    );
+    state = applyPlay(state, { cards: [card("A", "diamonds")], chosenSuit: "clubs" });
     expect(state.chosenSuit).toBe("clubs");
     state = nextTurn(state);
     state = confirmHandoff(state);
@@ -807,8 +823,27 @@ describe("Example Scenario from Spec", () => {
 });
 
 describe("Edge Cases", () => {
-  it("should handle Ace on Ace with suit change", () => {
+  it("should handle Ace on Ace with suit change when effective suit matches", () => {
+    // When chosenSuit is diamonds, only an Ace of diamonds can be played
     let state = setPlayerHand(
+      createTestState({
+        discardPile: [card("A", "hearts")],
+        chosenSuit: "diamonds",
+      }),
+      0,
+      [card("A", "diamonds"), card("7", "hearts")]
+    );
+
+    const plays = getLegalPlays(state, 0);
+    expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
+
+    state = applyPlay(state, { cards: [card("A", "diamonds")], chosenSuit: "spades" });
+    expect(state.chosenSuit).toBe("spades");
+  });
+
+  it("should NOT allow Ace on Ace when effective suit does not match", () => {
+    // When chosenSuit is diamonds, an Ace of clubs CANNOT be played
+    const state = setPlayerHand(
       createTestState({
         discardPile: [card("A", "hearts")],
         chosenSuit: "diamonds",
@@ -818,10 +853,8 @@ describe("Edge Cases", () => {
     );
 
     const plays = getLegalPlays(state, 0);
-    expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
-
-    state = applyPlay(state, { cards: [card("A", "clubs")], chosenSuit: "spades" });
-    expect(state.chosenSuit).toBe("spades");
+    // A♣ cannot be played - doesn't match diamonds
+    expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
   });
 
   it("should handle empty draw pile with full recycle", () => {
@@ -2293,13 +2326,37 @@ describe("Ace Response Window", () => {
       expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
     });
 
-    it("should allow Ace-on-Ace regardless of suit", () => {
+    it("should NOT allow Ace-on-Ace by rank matching (prevents suit-change chaining)", () => {
       let state = createTestState();
       state = confirmHandoff(state);
       state.players[0].hand = [card("A", "spades"), card("3", "clubs")];
       state.discardPile = [card("A", "hearts")];
 
       const plays = getLegalPlays(state, 0);
+      // Ace of spades cannot match Ace of hearts by rank
+      expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(false);
+    });
+
+    it("should allow Ace-on-Ace when effective suit matches", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "hearts"), card("3", "clubs")];
+      state.discardPile = [card("A", "hearts")];
+
+      const plays = getLegalPlays(state, 0);
+      // Ace of hearts CAN match Ace of hearts (same suit)
+      expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
+    });
+
+    it("should allow Ace-on-Ace when chosenSuit matches", () => {
+      let state = createTestState();
+      state = confirmHandoff(state);
+      state.players[0].hand = [card("A", "spades"), card("3", "clubs")];
+      state.discardPile = [card("A", "hearts")];
+      state.chosenSuit = "spades"; // Previous Ace changed suit to spades
+
+      const plays = getLegalPlays(state, 0);
+      // Ace of spades CAN be played because effective suit is spades
       expect(plays.some((p) => p.play.cards[0].rank === "A")).toBe(true);
     });
   });

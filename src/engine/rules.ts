@@ -142,8 +142,8 @@ export function isSpecialCard(card: Card): boolean {
 /**
  * Check if a single card can be legally played on another
  * This checks the fundamental rule: suit must match OR rank must match
- * Note: Aces are NOT wild - they follow the same rules as other cards,
- * except Ace-on-Ace is always allowed regardless of suit.
+ * Note: Aces are NOT wild - they follow the same rules as other cards.
+ * Aces CANNOT be played on other Aces by rank matching (prevents suit-change chaining).
  */
 function canCardBePlayed(
   cardToPlay: Card,
@@ -151,9 +151,10 @@ function canCardBePlayed(
   targetRank: Rank,
   _hasForcedDraw: boolean
 ): boolean {
-  // Ace-on-Ace is always legal (regardless of suit)
+  // Aces cannot match other Aces by rank (prevents suit-change chaining)
+  // An Ace can only be played on another Ace if it matches the effective suit
   if (cardToPlay.rank === "A" && targetRank === "A") {
-    return true;
+    return cardToPlay.suit === targetSuit;
   }
 
   // Normal matching: same suit OR same rank
