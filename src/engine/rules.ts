@@ -1567,21 +1567,21 @@ export function canCancelJack(state: GameState, playerId: number): boolean {
 export function applyJackAccept(state: GameState): GameState {
   if (!state.jackResponse) return state;
 
-  const responderId = state.jackResponse.responderPlayerId;
+  const jackPlayerId = state.jackResponse.jackPlayerId;
 
   // Flip direction
   const newDirection: PlayDirection = state.direction === "CW" ? "CCW" : "CW";
 
-  // The responder's turn is consumed by accepting
-  // Next turn goes to the player after responder in the NEW direction
-  // We need to create a temporary state with new direction to calculate correctly
+  // Next turn goes to the player after the JACK PLAYER in the NEW direction
+  // The responder's right of reply is consumed, and play continues from
+  // where the Jack was played, but now in the opposite direction
   const tempState = { ...state, direction: newDirection };
-  const nextPlayerAfterResponder = getNextPlayerIndex(tempState, responderId);
+  const nextPlayerAfterJack = getNextPlayerIndex(tempState, jackPlayerId);
 
   return {
     ...state,
     direction: newDirection,
-    currentPlayerIndex: nextPlayerAfterResponder,
+    currentPlayerIndex: nextPlayerAfterJack,
     turnPhase: "waiting",
     jackResponse: null,
     // Preserve other state

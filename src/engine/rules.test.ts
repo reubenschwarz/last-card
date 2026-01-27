@@ -2180,9 +2180,9 @@ describe("Jack Power Card (Direction Switch)", () => {
 
       expect(isInJackResponse(state)).toBe(false);
       expect(state.direction).toBe("CCW");
-      // After accept, turn goes to next player in NEW direction from responder
-      // Responder was P1, new direction is CCW, so next is P0
-      expect(state.currentPlayerIndex).toBe(0);
+      // After accept, turn goes to next player in NEW direction from JACK PLAYER
+      // Jack player was P0, new direction is CCW, so next is P3
+      expect(state.currentPlayerIndex).toBe(3);
     });
 
     it("should NOT flip direction when responder cancels with 7", () => {
