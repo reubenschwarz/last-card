@@ -12,6 +12,7 @@ import { HandoffScreen } from "./HandoffScreen";
 import { GameControls, LastCardButton } from "./GameControls";
 import { StatusBar } from "./StatusBar";
 import { WinScreen } from "./WinScreen";
+import { HowToPlay } from "./HowToPlay";
 
 export function GameBoard() {
   const {
@@ -84,6 +85,7 @@ export function GameBoard() {
   // Game setup state
   const [setupPlayerCount, setSetupPlayerCount] = useState(2);
   const [setupPlayerTypes, setSetupPlayerTypes] = useState<PlayerType[]>(["human", "human"]);
+  const [showHowToPlay, setShowHowToPlay] = useState(false);
 
   // Update player types when count changes
   const handlePlayerCountChange = useCallback((count: number) => {
@@ -196,6 +198,17 @@ export function GameBoard() {
         >
           Start Game
         </button>
+
+        {/* How to Play button */}
+        <button
+          onClick={() => setShowHowToPlay(true)}
+          className="rounded-lg bg-gray-700 px-6 py-2 text-white transition-all hover:bg-gray-600"
+        >
+          How to Play
+        </button>
+
+        {/* How to Play modal */}
+        {showHowToPlay && <HowToPlay onClose={() => setShowHowToPlay(false)} />}
       </div>
     );
   }
@@ -715,10 +728,24 @@ export function GameBoard() {
               />
             </div>
           )}
+
+          {/* Help button - bottom left corner */}
+          <button
+            onClick={() => setShowHowToPlay(true)}
+            className="absolute bottom-4 left-4 flex h-10 w-10 items-center justify-center rounded-full bg-gray-700/80 text-lg font-bold text-white transition-all hover:bg-gray-600"
+            title="How to Play"
+          >
+            ?
+          </button>
         </div>
       </>
     );
   }
 
-  return <div className="flex min-h-screen flex-col bg-felt">{renderGameContent()}</div>;
+  return (
+    <div className="flex min-h-screen flex-col bg-felt">
+      {renderGameContent()}
+      {showHowToPlay && <HowToPlay onClose={() => setShowHowToPlay(false)} />}
+    </div>
+  );
 }

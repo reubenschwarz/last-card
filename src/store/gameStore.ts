@@ -638,8 +638,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   hasSpecialCardSelected: () => {
-    const { playOrder } = get();
-    return playOrder.some(isSpecialCard);
+    const { playOrder, gameState } = get();
+    if (!gameState) return false;
+    // Check for 2, 5, 10 (always special)
+    if (playOrder.some(isSpecialCard)) return true;
+    // Check for Jack (special in 3+ player games - direction change)
+    const hasJack = playOrder.some((c) => c.rank === "J");
+    if (hasJack && gameState.players.length >= 3) return true;
+    // Check for Ace (special - suit change)
+    const hasAce = playOrder.some((c) => c.rank === "A");
+    if (hasAce) return true;
+    return false;
   },
 
   // Seven Dispute helpers
