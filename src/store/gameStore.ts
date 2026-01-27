@@ -707,6 +707,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     let activeIndex: number;
     if (isInSevenDispute(gameState) && gameState.sevenDispute) {
       activeIndex = gameState.sevenDispute.responderPlayerId;
+    } else if (isInJackResponse(gameState) && gameState.jackResponse) {
+      activeIndex = gameState.jackResponse.responderPlayerId;
+    } else if (isInAceResponse(gameState) && gameState.aceResponse) {
+      activeIndex = gameState.aceResponse.responderPlayerId;
     } else if (isInResponsePhase(gameState) && gameState.respondingPlayerIndex !== null) {
       activeIndex = gameState.respondingPlayerIndex;
     } else {
