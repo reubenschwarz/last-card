@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:party": "partykit dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -11,11 +12,15 @@
     "format:check": "prettier --check .",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage"
+    "test:coverage": "vitest --coverage",
+    "deploy:party": "partykit deploy"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
+    "nanoid": "^5.1.6",
     "next": "^15.3.0",
+    "partykit": "^0.0.115",
+    "partysocket": "^1.1.10",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^5.0.3"
