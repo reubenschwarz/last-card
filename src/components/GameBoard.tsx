@@ -57,6 +57,24 @@ export function GameBoard() {
     acceptSevenDispute,
     getSevenDisputeStatusMessage,
     getSevenDisputeResponder,
+    // Jack response
+    isInJackResponse,
+    canRespondToJack,
+    getLegalJackCancels,
+    canCancelJack,
+    getJackResponder,
+    acceptJackResponse,
+    cancelJackResponse,
+    // Ace response
+    isInAceResponse,
+    canRespondToAce,
+    getLegalAceCancels,
+    canCancelAce,
+    getAceResponder,
+    acceptAceResponse,
+    cancelAceResponse,
+    // Direction
+    getDirection,
     // AI helpers
     isActivePlayerAi,
     getActivePlayerIndex,
@@ -209,9 +227,16 @@ export function GameBoard() {
   const activePlayerType = getPlayerType(activeIndex);
   const activeIsAi = activePlayerType === "ai";
 
-  // Handoff screen - only for human players, not during response phase, not during seven dispute
+  // Handoff screen - only for human players, not during any response phase
   // AI players don't need handoff - the useEffect handles their turn automatically
-  if (gameState.turnPhase === "waiting" && !isInResponsePhase() && !isInSevenDispute() && !activeIsAi) {
+  if (
+    gameState.turnPhase === "waiting" &&
+    !isInResponsePhase() &&
+    !isInSevenDispute() &&
+    !isInJackResponse() &&
+    !isInAceResponse() &&
+    !activeIsAi
+  ) {
     return (
       <HandoffScreen playerNumber={gameState.currentPlayerIndex + 1} onConfirm={confirmHandoff} />
     );
@@ -232,8 +257,12 @@ export function GameBoard() {
 
     const inResponsePhase = isInResponsePhase();
     const inSevenDispute = isInSevenDispute();
+    const inJackResponse = isInJackResponse();
+    const inAceResponse = isInAceResponse();
     const respondingPlayer = getRespondingPlayer();
     const sevenDisputeResponder = getSevenDisputeResponder();
+    const jackResponder = getJackResponder();
+    const aceResponder = getAceResponder();
     const legalDeflections = getLegalDeflections();
 
     // Seven cancel options
@@ -244,11 +273,25 @@ export function GameBoard() {
     const legalSevenDisputePlays = getLegalSevenDisputePlays();
     const sevenDisputeStatus = getSevenDisputeStatusMessage();
 
+    // Jack/Ace cancel options
+    const legalJackCancels = getLegalJackCancels();
+    const legalAceCancels = getLegalAceCancels();
+
+    // Direction for display
+    const direction = getDirection();
+    const playerCount = gameState.players.length;
+
     // During response phase, show the responding player's view
     // During seven dispute, show the dispute responder's view
+    // During Jack response, show Jack responder's view
+    // During Ace response, show Ace responder's view
     let displayPlayer = currentPlayer;
     if (inSevenDispute && sevenDisputeResponder) {
       displayPlayer = sevenDisputeResponder;
+    } else if (inJackResponse && jackResponder) {
+      displayPlayer = jackResponder;
+    } else if (inAceResponse && aceResponder) {
+      displayPlayer = aceResponder;
     } else if (inResponsePhase && respondingPlayer) {
       displayPlayer = respondingPlayer;
     }
@@ -266,6 +309,10 @@ export function GameBoard() {
     let displayPlayerIndex = gameState.currentPlayerIndex;
     if (inSevenDispute && gameState.sevenDispute) {
       displayPlayerIndex = gameState.sevenDispute.responderPlayerId;
+    } else if (inJackResponse && gameState.jackResponse) {
+      displayPlayerIndex = gameState.jackResponse.responderPlayerId;
+    } else if (inAceResponse && gameState.aceResponse) {
+      displayPlayerIndex = gameState.aceResponse.responderPlayerId;
     } else if (inResponsePhase && gameState.respondingPlayerIndex !== null) {
       displayPlayerIndex = gameState.respondingPlayerIndex;
     }
@@ -291,6 +338,16 @@ export function GameBoard() {
       return legalSevenDisputePlays.some((c) => cardEquals(c, card));
     };
 
+    // Check if a card is a legal Jack/7 for canceling Jack response
+    const isJackCancelCard = (card: CardType) => {
+      return legalJackCancels.some((c) => cardEquals(c, card));
+    };
+
+    // Check if a card is a legal 7 for canceling Ace response
+    const isAceCancelCard = (card: CardType) => {
+      return legalAceCancels.some((c) => cardEquals(c, card));
+    };
+
     // Handle card click during response phase
     const handleResponseCardClick = (card: CardType) => {
       if (isDeflectionCard(card)) {
@@ -311,6 +368,20 @@ export function GameBoard() {
     const handleLastCardChallengeClick = (card: CardType) => {
       if (isSevenCancelLastCardCard(card)) {
         playSevenCancelLastCard(card);
+      }
+    };
+
+    // Handle card click during Jack response
+    const handleJackResponseCardClick = (card: CardType) => {
+      if (isJackCancelCard(card)) {
+        cancelJackResponse(card);
+      }
+    };
+
+    // Handle card click during Ace response
+    const handleAceResponseCardClick = (card: CardType) => {
+      if (isAceCancelCard(card)) {
+        cancelAceResponse(card);
       }
     };
 
@@ -364,13 +435,46 @@ export function GameBoard() {
         )}
 
         {/* Response phase banner */}
-        {!inSevenDispute && inResponsePhase && (
+        {!inSevenDispute && !inJackResponse && !inAceResponse && inResponsePhase && (
           <div className="bg-yellow-600 px-4 py-3 text-center">
             <div className="text-lg font-bold text-white">
               Right of Reply - Player {displayPlayerIndex + 1}
             </div>
             <div className="text-sm text-yellow-100">
               You are facing {getEffectDescription()}. Play a {gameState.responseChainRank} to deflect{canCancelEffect ? ", play a 7 to cancel" : ""}, or resolve to accept.
+            </div>
+          </div>
+        )}
+
+        {/* Jack Response banner */}
+        {inJackResponse && gameState.jackResponse && (
+          <div className="bg-indigo-600 px-4 py-3 text-center">
+            <div className="flex items-center justify-center gap-3">
+              <div className="text-lg font-bold text-white">
+                Direction Change - Player {displayPlayerIndex + 1}
+              </div>
+              {playerCount >= 3 && (
+                <div className="flex items-center gap-1 rounded bg-indigo-500 px-2 py-1 text-sm font-bold text-white">
+                  {direction === "CW" ? "→ CCW" : "→ CW"}
+                </div>
+              )}
+            </div>
+            <div className="text-sm text-indigo-100">
+              Player {gameState.jackResponse.jackPlayerId + 1} played J{gameState.jackResponse.jackSuit[0].toUpperCase()}.
+              Accept to flip direction, or cancel with a 7{gameState.jackResponse.jackSuit[0].toUpperCase()} or any Jack.
+            </div>
+          </div>
+        )}
+
+        {/* Ace Response banner */}
+        {inAceResponse && gameState.aceResponse && (
+          <div className="bg-emerald-600 px-4 py-3 text-center">
+            <div className="text-lg font-bold text-white">
+              Suit Change - Player {displayPlayerIndex + 1}
+            </div>
+            <div className="text-sm text-emerald-100">
+              Player {gameState.aceResponse.acePlayerId + 1} played A{gameState.aceResponse.aceSuit[0].toUpperCase()} and chose {gameState.aceResponse.chosenSuit}.
+              Accept to allow suit change, or cancel with 7{gameState.aceResponse.aceSuit[0].toUpperCase()}.
             </div>
           </div>
         )}
@@ -390,26 +494,36 @@ export function GameBoard() {
             ))}
           </div>
 
+          {/* Direction indicator for 3+ players */}
+          {playerCount >= 3 && (
+            <div className="absolute right-4 top-4 flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2">
+              <span className="text-sm font-medium text-white/80">Direction:</span>
+              <span className={`rounded px-2 py-0.5 text-sm font-bold ${direction === "CW" ? "bg-blue-600 text-white" : "bg-orange-600 text-white"}`}>
+                {direction === "CW" ? "→ Clockwise" : "← Counter-CW"}
+              </span>
+            </div>
+          )}
+
           {/* Play area (center) */}
           <div className="flex flex-1 items-center justify-center">
             <PlayArea
               topCard={topCard}
               drawPileCount={gameState.drawPile.length}
               chosenSuit={gameState.chosenSuit}
-              onDrawClick={(inResponsePhase || inSevenDispute) ? undefined : drawCard}
-              canDraw={(inResponsePhase || inSevenDispute) ? false : canDrawCard}
+              onDrawClick={(inResponsePhase || inSevenDispute || inJackResponse || inAceResponse) ? undefined : drawCard}
+              canDraw={(inResponsePhase || inSevenDispute || inJackResponse || inAceResponse) ? false : canDrawCard}
             />
           </div>
 
           {/* Order strip (when multiple cards selected - not during response phase) */}
-          {!inResponsePhase && playOrder.length > 1 && (
+          {!inResponsePhase && !inJackResponse && !inAceResponse && playOrder.length > 1 && (
             <div className="flex justify-center py-4">
               <OrderStrip cards={playOrder} onReorder={reorderPlayCard} />
             </div>
           )}
 
-          {/* Activation toggle for special cards (not during response phase) */}
-          {!inResponsePhase && hasSpecialCardSelected() && (
+          {/* Activation toggle for special cards (not during response phases) */}
+          {!inResponsePhase && !inSevenDispute && !inJackResponse && !inAceResponse && hasSpecialCardSelected() && (
             <div className="flex items-center justify-center gap-3 py-2">
               <label className="flex cursor-pointer items-center gap-2 rounded-lg bg-gray-800/80 px-4 py-2 text-white">
                 <input
@@ -440,6 +554,34 @@ export function GameBoard() {
               {legalSevenDisputePlays.length > 0 && (
                 <div className="flex items-center text-sm text-purple-300">
                   Or click a 7 in your hand to counter
+                </div>
+              )}
+            </div>
+          ) : inJackResponse ? (
+            <div className="flex justify-center gap-4 py-4">
+              <button
+                onClick={acceptJackResponse}
+                className="rounded-lg bg-indigo-700 px-8 py-3 font-bold text-white transition-all hover:bg-indigo-600"
+              >
+                Accept Direction Change
+              </button>
+              {legalJackCancels.length > 0 && (
+                <div className="flex items-center text-sm text-indigo-300">
+                  Or click a 7 or Jack in your hand to cancel
+                </div>
+              )}
+            </div>
+          ) : inAceResponse ? (
+            <div className="flex justify-center gap-4 py-4">
+              <button
+                onClick={acceptAceResponse}
+                className="rounded-lg bg-emerald-700 px-8 py-3 font-bold text-white transition-all hover:bg-emerald-600"
+              >
+                Accept Suit Change to {gameState.aceResponse?.chosenSuit}
+              </button>
+              {legalAceCancels.length > 0 && (
+                <div className="flex items-center text-sm text-emerald-300">
+                  Or click a matching 7 in your hand to cancel
                 </div>
               )}
             </div>
@@ -493,7 +635,7 @@ export function GameBoard() {
           {/* Player's hand (bottom) */}
           <div className="bg-black/20 py-6">
             <div className="mb-2 text-center text-sm font-medium text-white/70">
-              {(inSevenDispute || inResponsePhase) ? `Player ${displayPlayerIndex + 1}'s Hand` : "Your Hand"} ({displayPlayer.hand.length} cards)
+              {(inSevenDispute || inResponsePhase || inJackResponse || inAceResponse) ? `Player ${displayPlayerIndex + 1}'s Hand` : "Your Hand"} ({displayPlayer.hand.length} cards)
             </div>
             {inSevenDispute ? (
               <Hand
@@ -503,6 +645,24 @@ export function GameBoard() {
                 onDeselectCard={() => {}}
                 disabled={false}
                 highlightCards={legalSevenDisputePlays}
+              />
+            ) : inJackResponse ? (
+              <Hand
+                cards={displayPlayer.hand}
+                selectedCards={[]}
+                onSelectCard={handleJackResponseCardClick}
+                onDeselectCard={() => {}}
+                disabled={false}
+                highlightCards={legalJackCancels}
+              />
+            ) : inAceResponse ? (
+              <Hand
+                cards={displayPlayer.hand}
+                selectedCards={[]}
+                onSelectCard={handleAceResponseCardClick}
+                onDeselectCard={() => {}}
+                disabled={false}
+                highlightCards={legalAceCancels}
               />
             ) : canCancelLastCard ? (
               <Hand
@@ -540,7 +700,7 @@ export function GameBoard() {
           </div>
 
           {/* Unobtrusive "Last Card" button - bottom right corner (not during special phases) */}
-          {!inResponsePhase && !inSevenDispute && (
+          {!inResponsePhase && !inSevenDispute && !inJackResponse && !inAceResponse && (
             <div className="absolute bottom-4 right-4">
               <LastCardButton
                 onClick={declareLastCard}

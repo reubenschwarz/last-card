@@ -48,6 +48,20 @@ import {
   applySevenDisputePlay,
   applySevenDisputeAccept,
   getSevenDisputeStatusMessage,
+  // Jack response functions
+  isInJackResponse,
+  canRespondToJack,
+  getLegalJackCancels,
+  canCancelJack,
+  applyJackAccept,
+  applyJackCancel,
+  // Ace response functions
+  isInAceResponse,
+  canRespondToAce,
+  getLegalAceCancels,
+  canCancelAce,
+  applyAceAccept,
+  applyAceCancel,
 } from "@/engine";
 
 interface GameStore {
@@ -87,6 +101,14 @@ interface GameStore {
   playSevenDispute: (card: Card) => void;
   acceptSevenDispute: () => void;
 
+  // Jack response actions
+  acceptJackResponse: () => void;
+  cancelJackResponse: (card: Card) => void;
+
+  // Ace response actions
+  acceptAceResponse: () => void;
+  cancelAceResponse: (card: Card) => void;
+
   // Computed helpers
   getCurrentPlayer: () => { id: number; hand: Card[] } | null;
   getLegalPlays: () => LegalPlay[];
@@ -114,6 +136,23 @@ interface GameStore {
   canPlaySevenDispute: () => boolean;
   getSevenDisputeStatusMessage: () => string | null;
   getSevenDisputeResponder: () => { id: number; hand: Card[] } | null;
+
+  // Jack response helpers
+  isInJackResponse: () => boolean;
+  canRespondToJack: () => boolean;
+  getLegalJackCancels: () => Card[];
+  canCancelJack: () => boolean;
+  getJackResponder: () => { id: number; hand: Card[] } | null;
+
+  // Ace response helpers
+  isInAceResponse: () => boolean;
+  canRespondToAce: () => boolean;
+  getLegalAceCancels: () => Card[];
+  canCancelAce: () => boolean;
+  getAceResponder: () => { id: number; hand: Card[] } | null;
+
+  // Direction helper
+  getDirection: () => "CW" | "CCW" | null;
 
   // AI and player type helpers
   isActivePlayerAi: () => boolean; // Check if the player who needs to act is AI
@@ -158,6 +197,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     let activeIndex: number;
     if (isInSevenDispute(gameState) && gameState.sevenDispute) {
       activeIndex = gameState.sevenDispute.responderPlayerId;
+    } else if (isInJackResponse(gameState) && gameState.jackResponse) {
+      activeIndex = gameState.jackResponse.responderPlayerId;
+    } else if (isInAceResponse(gameState) && gameState.aceResponse) {
+      activeIndex = gameState.aceResponse.responderPlayerId;
     } else if (isInResponsePhase(gameState) && gameState.respondingPlayerIndex !== null) {
       activeIndex = gameState.respondingPlayerIndex;
     } else {
@@ -178,6 +221,34 @@ export const useGameStore = create<GameStore>((set, get) => ({
       } else {
         // AI accepts the dispute outcome
         newState = applySevenDisputeAccept(gameState);
+      }
+      set({ gameState: newState });
+      return;
+    }
+
+    // Handle Jack Response phase
+    if (isInJackResponse(gameState) && gameState.jackResponse) {
+      const cancels = getLegalJackCancels(gameState, activeIndex);
+      if (cancels.length > 0) {
+        // AI cancels with first available card (7 of Jack's suit or another Jack)
+        newState = applyJackCancel(gameState, cancels[0]);
+      } else {
+        // AI accepts direction flip
+        newState = applyJackAccept(gameState);
+      }
+      set({ gameState: newState });
+      return;
+    }
+
+    // Handle Ace Response phase
+    if (isInAceResponse(gameState) && gameState.aceResponse) {
+      const cancels = getLegalAceCancels(gameState, activeIndex);
+      if (cancels.length > 0) {
+        // AI cancels with 7 of Ace's suit
+        newState = applyAceCancel(gameState, cancels[0]);
+      } else {
+        // AI accepts suit change
+        newState = applyAceAccept(gameState);
       }
       set({ gameState: newState });
       return;
@@ -256,8 +327,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
         // Apply the play
         newState = applyPlay(newState, chosenPlay.play);
 
-        // Auto-end turn if no response phase
-        if (newState.winner === null && newState.responsePhase !== "responding") {
+        // Auto-end turn if no response phase, Jack response, or Ace response
+        if (
+          newState.winner === null &&
+          newState.responsePhase !== "responding" &&
+          !isInJackResponse(newState) &&
+          !isInAceResponse(newState)
+        ) {
           newState = nextTurn(newState);
         }
 
@@ -313,27 +389,41 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { gameState, playOrder, pendingSuitChoice, activateEffect } = get();
     if (!gameState) return;
 
-    // Check if we need a suit choice for Ace
+    // Check if we need a suit choice for Ace (only if activation is ON)
     const lastCard = playOrder[playOrder.length - 1];
-    if (lastCard?.rank === "A" && !chosenSuit && !pendingSuitChoice) {
+    if (lastCard?.rank === "A" && activateEffect && !chosenSuit && !pendingSuitChoice) {
       set({ pendingSuitChoice: true });
       return;
     }
 
     // Check if play contains special cards (2, 5, 10)
-    const hasSpecial = playOrder.some(isSpecialCard);
+    const hasSpecialEffect = playOrder.some(isSpecialCard);
+
+    // Check if play is a Jack (activation matters for 3+ players)
+    const isJackPlay = playOrder.length === 1 && lastCard?.rank === "J";
+    const isAcePlay = playOrder.length === 1 && lastCard?.rank === "A";
 
     const play: Play = {
       cards: playOrder,
-      chosenSuit: lastCard?.rank === "A" ? chosenSuit : undefined,
-      activateEffect: hasSpecial ? activateEffect : undefined,
+      // For Ace: only set chosenSuit if activation is ON
+      chosenSuit: isAcePlay && activateEffect ? chosenSuit : undefined,
+      // Activation affects: 2/5/10 effects, Jack direction (3+ players), Ace suit change
+      activateEffect:
+        hasSpecialEffect || (isJackPlay && gameState.players.length >= 3) || isAcePlay
+          ? activateEffect
+          : undefined,
     };
 
     if (isPlayLegal(gameState, gameState.currentPlayerIndex, play)) {
       let newState = applyPlay(gameState, play);
 
-      // Auto-end turn after playing (unless game is over or entering response phase)
-      if (newState.winner === null && newState.responsePhase !== "responding") {
+      // Auto-end turn after playing (unless game is over or entering response/Jack/Ace phase)
+      if (
+        newState.winner === null &&
+        newState.responsePhase !== "responding" &&
+        !isInJackResponse(newState) &&
+        !isInAceResponse(newState)
+      ) {
         newState = nextTurn(newState);
       }
 
@@ -624,6 +714,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     if (isInSevenDispute(gameState) && gameState.sevenDispute) {
       return gameState.sevenDispute.responderPlayerId;
+    } else if (isInJackResponse(gameState) && gameState.jackResponse) {
+      return gameState.jackResponse.responderPlayerId;
+    } else if (isInAceResponse(gameState) && gameState.aceResponse) {
+      return gameState.aceResponse.responderPlayerId;
     } else if (isInResponsePhase(gameState) && gameState.respondingPlayerIndex !== null) {
       return gameState.respondingPlayerIndex;
     } else {
@@ -635,5 +729,106 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { gameState } = get();
     if (!gameState || index < 0 || index >= gameState.players.length) return null;
     return gameState.players[index].playerType;
+  },
+
+  // Jack response helpers
+  isInJackResponse: () => {
+    const { gameState } = get();
+    if (!gameState) return false;
+    return isInJackResponse(gameState);
+  },
+
+  canRespondToJack: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.jackResponse) return false;
+    return canRespondToJack(gameState, gameState.jackResponse.responderPlayerId);
+  },
+
+  getLegalJackCancels: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.jackResponse) return [];
+    return getLegalJackCancels(gameState, gameState.jackResponse.responderPlayerId);
+  },
+
+  canCancelJack: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.jackResponse) return false;
+    return canCancelJack(gameState, gameState.jackResponse.responderPlayerId);
+  },
+
+  getJackResponder: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.jackResponse) return null;
+    const player = gameState.players[gameState.jackResponse.responderPlayerId];
+    return { id: player.id, hand: player.hand };
+  },
+
+  // Ace response helpers
+  isInAceResponse: () => {
+    const { gameState } = get();
+    if (!gameState) return false;
+    return isInAceResponse(gameState);
+  },
+
+  canRespondToAce: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.aceResponse) return false;
+    return canRespondToAce(gameState, gameState.aceResponse.responderPlayerId);
+  },
+
+  getLegalAceCancels: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.aceResponse) return [];
+    return getLegalAceCancels(gameState, gameState.aceResponse.responderPlayerId);
+  },
+
+  canCancelAce: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.aceResponse) return false;
+    return canCancelAce(gameState, gameState.aceResponse.responderPlayerId);
+  },
+
+  getAceResponder: () => {
+    const { gameState } = get();
+    if (!gameState || !gameState.aceResponse) return null;
+    const player = gameState.players[gameState.aceResponse.responderPlayerId];
+    return { id: player.id, hand: player.hand };
+  },
+
+  // Direction helper
+  getDirection: () => {
+    const { gameState } = get();
+    if (!gameState) return null;
+    return gameState.direction;
+  },
+
+  // Jack response actions
+  acceptJackResponse: () => {
+    const { gameState } = get();
+    if (!gameState || !isInJackResponse(gameState)) return;
+    const newState = applyJackAccept(gameState);
+    set({ gameState: newState, selectedCards: [], playOrder: [] });
+  },
+
+  cancelJackResponse: (card: Card) => {
+    const { gameState } = get();
+    if (!gameState || !isInJackResponse(gameState)) return;
+    const newState = applyJackCancel(gameState, card);
+    set({ gameState: newState, selectedCards: [], playOrder: [] });
+  },
+
+  // Ace response actions
+  acceptAceResponse: () => {
+    const { gameState } = get();
+    if (!gameState || !isInAceResponse(gameState)) return;
+    const newState = applyAceAccept(gameState);
+    set({ gameState: newState, selectedCards: [], playOrder: [] });
+  },
+
+  cancelAceResponse: (card: Card) => {
+    const { gameState } = get();
+    if (!gameState || !isInAceResponse(gameState)) return;
+    const newState = applyAceCancel(gameState, card);
+    set({ gameState: newState, selectedCards: [], playOrder: [] });
   },
 }));

@@ -882,15 +882,6 @@ describe("Edge Cases", () => {
 // ===========================================
 // Right of Reply / Response Chain Tests
 // ===========================================
-import {
-  isInResponsePhase,
-  getLegalDeflections,
-  getLegalCancels,
-  canCancel,
-  applyResolve,
-  applyDeflect,
-  applyCancel,
-} from "./rules";
 
 describe("Right of Reply - Response Phase", () => {
   describe("Entering response phase", () => {
@@ -1104,13 +1095,13 @@ describe("Right of Reply - Response Phase", () => {
       state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
       expect(state.pendingEffects.forcedDrawCount).toBe(2);
 
-      // Only the 2 should be a legal cancel, not the 5 or 10
-      const cancels = getLegalCancels(state);
-      expect(cancels.length).toBe(1);
-      expect(cancels[0].rank).toBe("2");
+      // Only the 2 should be a legal deflection, not the 5 or 10
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(1);
+      expect(deflections[0].rank).toBe("2");
 
-      // Cancel with 2 should work
-      state = applyCancel(state, { rank: "2", suit: "diamonds" });
+      // Deflect with 2 should work
+      state = applyDeflect(state, { rank: "2", suit: "diamonds" });
       expect(state.pendingEffects.forcedDrawCount).toBe(4); // Stacked
       expect(state.responseChainRank).toBe("2"); // Still a 2 chain
     });
@@ -1134,10 +1125,10 @@ describe("Right of Reply - Response Phase", () => {
       state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
       expect(state.pendingEffects.forcedDrawCount).toBe(5);
 
-      // Only the 5 should be a legal cancel, not the 2 or 10
-      const cancels = getLegalCancels(state);
-      expect(cancels.length).toBe(1);
-      expect(cancels[0].rank).toBe("5");
+      // Only the 5 should be a legal deflection, not the 2 or 10
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(1);
+      expect(deflections[0].rank).toBe("5");
     });
 
     it("should only allow cancelling a 10 with another 10", () => {
@@ -1159,13 +1150,13 @@ describe("Right of Reply - Response Phase", () => {
       state = applyPlay(state, { cards: [{ rank: "10", suit: "hearts" }] });
       expect(state.pendingEffects.skipNextPlayer).toBe(true);
 
-      // Only the 10 should be a legal cancel, not the 2 or 5
-      const cancels = getLegalCancels(state);
-      expect(cancels.length).toBe(1);
-      expect(cancels[0].rank).toBe("10");
+      // Only the 10 should be a legal deflection, not the 2 or 5
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(1);
+      expect(deflections[0].rank).toBe("10");
 
-      // Cancel with 10 should pass the skip to next player
-      state = applyCancel(state, { rank: "10", suit: "diamonds" });
+      // Deflect with 10 should pass the skip to next player
+      state = applyDeflect(state, { rank: "10", suit: "diamonds" });
       expect(state.pendingEffects.skipNextPlayer).toBe(true);
       expect(state.responseChainRank).toBe("10");
     });
@@ -1187,10 +1178,9 @@ describe("Right of Reply - Response Phase", () => {
       // Player 0 plays 2
       state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
 
-      // No legal cancels since player 1 has no 2
-      const cancels = getLegalCancels(state);
-      expect(cancels.length).toBe(0);
-      expect(canCancel(state)).toBe(false);
+      // No legal deflections since player 1 has no 2
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(0);
     });
 
     it("should NOT allow a 2 to cancel a 5 chain", () => {
@@ -1210,10 +1200,9 @@ describe("Right of Reply - Response Phase", () => {
       // Player 0 plays 5
       state = applyPlay(state, { cards: [{ rank: "5", suit: "hearts" }] });
 
-      // No legal cancels since player 1 has no 5
-      const cancels = getLegalCancels(state);
-      expect(cancels.length).toBe(0);
-      expect(canCancel(state)).toBe(false);
+      // No legal deflections since player 1 has no 5
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(0);
     });
   });
 
@@ -1240,7 +1229,7 @@ describe("Right of Reply - Response Phase", () => {
       expect(deflections[0].rank).toBe("2");
     });
 
-    it("should return same rank cards as legal cancels (same rank only rule)", () => {
+    it("should return same rank cards as legal deflections (same rank only rule)", () => {
       let state = initializeGame(2, createSeededRng(100));
       state = confirmHandoff(state);
 
@@ -1251,15 +1240,15 @@ describe("Right of Reply - Response Phase", () => {
       state.players[1].hand = [
         { rank: "2", suit: "diamonds" },
         { rank: "2", suit: "clubs" },
-        { rank: "10", suit: "spades" }, // 10 should NOT be a legal cancel for 2 chain
+        { rank: "10", suit: "spades" }, // 10 should NOT be a legal deflection for 2 chain
       ];
       state.discardPile = [{ rank: "7", suit: "hearts" }];
 
       state = applyPlay(state, { cards: [{ rank: "2", suit: "hearts" }] });
 
-      const cancels = getLegalCancels(state);
-      expect(cancels.length).toBe(2);
-      expect(cancels.every((c) => c.rank === "2")).toBe(true); // Only 2s, not 10s
+      const deflections = getLegalDeflections(state);
+      expect(deflections.length).toBe(2);
+      expect(deflections.every((c) => c.rank === "2")).toBe(true); // Only 2s, not 10s
     });
   });
 });
