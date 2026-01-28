@@ -78,6 +78,27 @@ interface RoomPlayer {
 const RECONNECTION_GRACE_PERIOD_MS = 30 * 1000;
 
 /**
+ * Turn timer configuration
+ */
+const TURN_TIMER_MS = 30 * 1000; // 30 seconds for normal turns
+const RESPONSE_TIMER_MS = 15 * 1000; // 15 seconds for response phases
+const TIMER_WARNING_MS = 10 * 1000; // Warning at 10 seconds remaining
+const TIMER_UPDATE_INTERVAL_MS = 1000; // Send updates every second
+
+/**
+ * Active timer state
+ */
+interface TimerState {
+  playerId: string;
+  playerIndex: number;
+  startedAt: number;
+  durationMs: number;
+  phase: "turn" | "response";
+  timeoutId: ReturnType<typeof setTimeout> | null;
+  intervalId: ReturnType<typeof setInterval> | null;
+}
+
+/**
  * Full room state
  */
 interface RoomState {
@@ -92,6 +113,8 @@ interface RoomState {
   // Map player IDs to game indices
   playerIdToIndex: Map<string, number>;
   indexToPlayerId: Map<number, string>;
+  // Turn timer state
+  timer: TimerState | null;
 }
 
 // =============================================================================
@@ -118,6 +141,7 @@ export default class GameRoom implements Party.Server {
         aiSlots: 0,
         isPublic: true,
       },
+      timer: null,
       createdAt: Date.now(),
       gameState: null,
       playerIdToIndex: new Map(),
@@ -537,8 +561,9 @@ export default class GameRoom implements Party.Server {
     // Broadcast game started with initial state
     this.broadcastGameStarted();
 
-    // If first player is AI, execute their turn
+    // If first player is AI, execute their turn, otherwise start timer
     this.checkAndExecuteAITurn();
+    this.startTurnTimer();
   }
 
   // ===========================================================================
@@ -564,9 +589,14 @@ export default class GameRoom implements Party.Server {
       return;
     }
 
+    // Stop the current timer since player is taking action
+    this.stopTimer();
+
     const result = this.executeAction(playerIndex, action);
     if (!result.success) {
       this.sendError(conn, result.error || "Invalid action");
+      // Restart timer if action failed
+      this.startTurnTimer();
       return;
     }
 
@@ -579,8 +609,9 @@ export default class GameRoom implements Party.Server {
       return;
     }
 
-    // Check if AI needs to act
+    // Check if AI needs to act, then start timer for next player
     this.checkAndExecuteAITurn();
+    this.startTurnTimer();
   }
 
   private canPlayerAct(playerIndex: number): boolean {
@@ -852,10 +883,174 @@ export default class GameRoom implements Party.Server {
   }
 
   // ===========================================================================
+  // Turn Timer Management
+  // ===========================================================================
+
+  /**
+   * Start the turn timer for the current active player.
+   * Should be called after each state change that passes control to a new player.
+   */
+  private startTurnTimer() {
+    // Clear any existing timer
+    this.stopTimer();
+
+    const gs = this.state.gameState;
+    if (!gs || gs.winner !== null) return;
+
+    // Determine who needs to act and what phase they're in
+    let actingIndex: number;
+    let phase: "turn" | "response";
+
+    if (isInResponsePhase(gs) && gs.respondingPlayerIndex !== null) {
+      actingIndex = gs.respondingPlayerIndex;
+      phase = "response";
+    } else if (isInSevenDispute(gs) && gs.sevenDispute) {
+      actingIndex = gs.sevenDispute.responderPlayerId;
+      phase = "response";
+    } else if (isInJackResponse(gs) && gs.jackResponse) {
+      actingIndex = gs.jackResponse.responderPlayerId;
+      phase = "response";
+    } else if (isInAceResponse(gs) && gs.aceResponse) {
+      actingIndex = gs.aceResponse.responderPlayerId;
+      phase = "response";
+    } else {
+      actingIndex = gs.currentPlayerIndex;
+      phase = "turn";
+    }
+
+    const playerId = this.state.indexToPlayerId.get(actingIndex);
+    if (!playerId) return;
+
+    const player = this.state.players.find((p) => p.id === playerId);
+
+    // Don't start timer for AI players or disconnected players (AI handles them)
+    if (player?.isAI || player?.aiTakeover || !player?.isConnected) return;
+
+    const durationMs = phase === "response" ? RESPONSE_TIMER_MS : TURN_TIMER_MS;
+    const startedAt = Date.now();
+
+    // Set up the timer state
+    this.state.timer = {
+      playerId,
+      playerIndex: actingIndex,
+      startedAt,
+      durationMs,
+      phase,
+      timeoutId: null,
+      intervalId: null,
+    };
+
+    // Broadcast initial timer state
+    this.broadcastTimerUpdate();
+
+    // Set up interval to broadcast timer updates
+    this.state.timer.intervalId = setInterval(() => {
+      this.broadcastTimerUpdate();
+    }, TIMER_UPDATE_INTERVAL_MS);
+
+    // Set up timeout for auto-action
+    this.state.timer.timeoutId = setTimeout(() => {
+      this.handleTimerTimeout();
+    }, durationMs);
+
+    console.log(`[${this.state.code}] Timer started for player ${playerId} (${phase}, ${durationMs}ms)`);
+  }
+
+  /**
+   * Stop the current timer.
+   */
+  private stopTimer() {
+    if (!this.state.timer) return;
+
+    if (this.state.timer.timeoutId) {
+      clearTimeout(this.state.timer.timeoutId);
+    }
+    if (this.state.timer.intervalId) {
+      clearInterval(this.state.timer.intervalId);
+    }
+
+    this.state.timer = null;
+  }
+
+  /**
+   * Broadcast timer update to all clients.
+   */
+  private broadcastTimerUpdate() {
+    if (!this.state.timer) return;
+
+    const elapsed = Date.now() - this.state.timer.startedAt;
+    const remainingMs = Math.max(0, this.state.timer.durationMs - elapsed);
+
+    this.broadcast({
+      type: "timer_update",
+      payload: {
+        playerId: this.state.timer.playerId,
+        remainingMs,
+        phase: this.state.timer.phase,
+      },
+    });
+  }
+
+  /**
+   * Handle timer timeout - execute auto-action for the player.
+   */
+  private handleTimerTimeout() {
+    const timer = this.state.timer;
+    if (!timer) return;
+
+    console.log(`[${this.state.code}] Timer expired for player ${timer.playerId}`);
+
+    // Stop the timer
+    this.stopTimer();
+
+    const gs = this.state.gameState;
+    if (!gs || gs.winner !== null) return;
+
+    // Determine and execute the auto-action based on the game phase
+    let action: GameAction;
+
+    if (timer.phase === "response") {
+      // For response phases, accept/resolve
+      if (isInResponsePhase(gs)) {
+        action = { action: "resolve_response" };
+      } else if (isInSevenDispute(gs)) {
+        action = { action: "seven_dispute_accept" };
+      } else if (isInJackResponse(gs)) {
+        action = { action: "jack_accept" };
+      } else if (isInAceResponse(gs)) {
+        action = { action: "ace_accept" };
+      } else {
+        return; // Unknown state
+      }
+    } else {
+      // For normal turns, draw a card (safest default action)
+      action = { action: "draw" };
+    }
+
+    // Execute the action
+    const result = this.executeAction(timer.playerIndex, action);
+    if (result.success) {
+      this.broadcastStateUpdate(action, timer.playerId);
+
+      if (this.state.gameState?.winner !== null) {
+        this.handleGameEnd();
+      } else {
+        // Check for AI turn and start next timer
+        this.checkAndExecuteAITurn();
+        // Start timer for next player (if not AI)
+        this.startTurnTimer();
+      }
+    }
+  }
+
+  // ===========================================================================
   // Game End
   // ===========================================================================
 
   private handleGameEnd() {
+    // Stop any active timer
+    this.stopTimer();
+
     const gs = this.state.gameState;
     if (!gs || gs.winner === null) return;
 

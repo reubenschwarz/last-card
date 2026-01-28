@@ -228,6 +228,12 @@ export interface GameRoomState {
   gameState: ClientGameState | null;
   /** Last error message */
   error: string | null;
+  /** Turn timer state */
+  timer: {
+    playerId: string;
+    remainingMs: number;
+    phase: "turn" | "response";
+  } | null;
 }
 
 export interface UseGameRoomOptions {
@@ -284,6 +290,7 @@ const initialRoomState: GameRoomState = {
   isHost: false,
   gameState: null,
   error: null,
+  timer: null,
 };
 
 /**
@@ -385,6 +392,7 @@ export function useGameRoom(options: UseGameRoomOptions): UseGameRoomResult {
             ...prev,
             status: "ended",
             gameState: message.payload.finalState,
+            timer: null,
           }));
           break;
 
@@ -396,7 +404,14 @@ export function useGameRoom(options: UseGameRoomOptions): UseGameRoomResult {
           break;
 
         case "timer_update":
-          // Timer updates could be stored in room state if needed
+          setRoom((prev) => ({
+            ...prev,
+            timer: {
+              playerId: message.payload.playerId,
+              remainingMs: message.payload.remainingMs,
+              phase: message.payload.phase,
+            },
+          }));
           break;
       }
     },

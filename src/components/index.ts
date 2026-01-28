@@ -13,3 +13,5 @@ export { HowToPlay } from "./HowToPlay";
 export { MultiplayerSetup } from "./MultiplayerSetup";
 export { Lobby } from "./Lobby";
 export { ConnectionOverlay } from "./ConnectionOverlay";
+export { ConnectionStatus } from "./ConnectionStatus";
+export { TurnTimer } from "./TurnTimer";
