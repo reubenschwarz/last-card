@@ -51,6 +51,12 @@ import type {
 } from "../src/lib/party/messages";
 
 // =============================================================================
+// Matchmaker Configuration
+// =============================================================================
+
+const MATCHMAKER_ROOM_ID = "global"; // Single matchmaker instance
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -361,6 +367,9 @@ export default class GameRoom implements Party.Server {
         hostId: this.state.hostId,
       },
     });
+
+    // Update matchmaker with new player count
+    this.registerWithMatchmaker();
   }
 
   private handleSetName(conn: Party.Connection, payload: { name: string }) {
@@ -386,6 +395,8 @@ export default class GameRoom implements Party.Server {
       return;
     }
 
+    const wasPublic = this.state.config.isPublic;
+
     // Update config
     if (payload.maxPlayers !== undefined) {
       this.state.config.maxPlayers = payload.maxPlayers;
@@ -399,6 +410,16 @@ export default class GameRoom implements Party.Server {
 
     // Broadcast updated room state
     this.broadcastRoomState();
+
+    // Update matchmaker registration based on public status
+    if (this.state.config.isPublic && !wasPublic) {
+      this.registerWithMatchmaker();
+    } else if (!this.state.config.isPublic && wasPublic) {
+      this.unregisterFromMatchmaker();
+    } else if (this.state.config.isPublic) {
+      // Re-register if max players changed
+      this.registerWithMatchmaker();
+    }
   }
 
   private handleAddAI(conn: Party.Connection) {
@@ -515,6 +536,11 @@ export default class GameRoom implements Party.Server {
         reason,
       },
     });
+
+    // Update matchmaker with new player count (only if in lobby and player was human)
+    if (this.state.status === "lobby" && !player.isAI) {
+      this.registerWithMatchmaker();
+    }
   }
 
   // ===========================================================================
@@ -554,6 +580,9 @@ export default class GameRoom implements Party.Server {
     // Initialize game state
     this.state.gameState = initializeGame(totalPlayers, undefined, playerTypes);
     this.state.status = "playing";
+
+    // Unregister from matchmaker since game is starting
+    this.unregisterFromMatchmaker();
 
     // Auto-confirm handoff for first player (skip waiting phase)
     this.state.gameState = confirmHandoff(this.state.gameState);
@@ -1158,6 +1187,69 @@ export default class GameRoom implements Party.Server {
         gameState: this.toClientGameState(this.state.gameState, playerId),
       },
     });
+  }
+
+  // ===========================================================================
+  // Matchmaker Integration
+  // ===========================================================================
+
+  /**
+   * Register this room with the matchmaker as open for Quick Play.
+   * Called when room is public and has space.
+   */
+  private async registerWithMatchmaker() {
+    if (!this.state.config.isPublic) return;
+    if (this.state.status !== "lobby") return;
+
+    const playerCount = this.state.players.filter((p) => !p.isAI).length;
+    const maxPlayers = this.state.config.maxPlayers;
+
+    try {
+      const url = `${this.getMatchmakerUrl()}/register`;
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: this.state.code,
+          playerCount,
+          maxPlayers,
+        }),
+      });
+      console.log(`[${this.state.code}] Registered with matchmaker (${playerCount}/${maxPlayers})`);
+    } catch (error) {
+      console.error(`[${this.state.code}] Failed to register with matchmaker:`, error);
+    }
+  }
+
+  /**
+   * Unregister this room from the matchmaker.
+   * Called when game starts, room closes, or room becomes private.
+   */
+  private async unregisterFromMatchmaker() {
+    try {
+      const url = `${this.getMatchmakerUrl()}/unregister`;
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: this.state.code }),
+      });
+      console.log(`[${this.state.code}] Unregistered from matchmaker`);
+    } catch (error) {
+      console.error(`[${this.state.code}] Failed to unregister from matchmaker:`, error);
+    }
+  }
+
+  /**
+   * Get the matchmaker URL based on the party host.
+   */
+  private getMatchmakerUrl(): string {
+    // In Partykit, we can access other parties via the room's party URL pattern
+    // The URL format is: https://{project}.{user}.partykit.dev/parties/{partyName}/{roomId}
+    // For local dev: http://localhost:1999/parties/matchmaker/global
+    const env = this.room.env as Record<string, string | undefined>;
+    const host = env.PARTYKIT_HOST ?? "localhost:1999";
+    const protocol = host.includes("localhost") ? "http" : "https";
+    return `${protocol}://${host}/parties/matchmaker/${MATCHMAKER_ROOM_ID}`;
   }
 
   // ===========================================================================

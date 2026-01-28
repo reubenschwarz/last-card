@@ -58,9 +58,9 @@ export function MultiplayerSetup({ onProceed, onBack }: MultiplayerSetupProps) {
       if (mode === "create") {
         code = generateRoomCode();
       } else if (mode === "quick") {
-        // For quick play, we'll generate a code and let the server handle matching
-        // The server/client will need to check for open games first
-        code = `quick_${generateRoomCode()}`;
+        // Quick play is handled by the lobby page via matchmaker
+        // Just pass empty code, lobby will query matchmaker and generate if needed
+        code = "";
       } else if (mode === "join") {
         // Validate join code
         const cleanCode = joinCode.toUpperCase().trim();
