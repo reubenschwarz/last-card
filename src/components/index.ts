@@ -12,3 +12,4 @@ export { GameBoard } from "./GameBoard";
 export { HowToPlay } from "./HowToPlay";
 export { MultiplayerSetup } from "./MultiplayerSetup";
 export { Lobby } from "./Lobby";
+export { ConnectionOverlay } from "./ConnectionOverlay";

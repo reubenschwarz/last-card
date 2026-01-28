@@ -57,6 +57,8 @@ export interface UsePartySocketOptions {
 export interface UsePartySocketResult {
   /** Current connection status */
   status: ConnectionStatus;
+  /** Timestamp when disconnection occurred (for reconnection countdown) */
+  disconnectedAt: number | null;
   /** Send a message to the server */
   send: (message: ClientMessage) => void;
   /** Manually connect to the server */
@@ -77,6 +79,7 @@ export function usePartySocket(
   const { roomCode, onMessage, onStatusChange, onError, autoConnect = true } = options;
 
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
+  const [disconnectedAt, setDisconnectedAt] = useState<number | null>(null);
   const socketRef = useRef<PartySocket | null>(null);
   const reconnectAttemptRef = useRef(0);
 
@@ -85,8 +88,15 @@ export function usePartySocket(
     (newStatus: ConnectionStatus) => {
       setStatus(newStatus);
       onStatusChange?.(newStatus);
+
+      // Track disconnection time for reconnection countdown
+      if (newStatus === "reconnecting" && disconnectedAt === null) {
+        setDisconnectedAt(Date.now());
+      } else if (newStatus === "connected") {
+        setDisconnectedAt(null);
+      }
     },
-    [onStatusChange]
+    [onStatusChange, disconnectedAt]
   );
 
   // Create and connect the socket
@@ -187,6 +197,7 @@ export function usePartySocket(
 
   return {
     status,
+    disconnectedAt,
     send,
     connect,
     disconnect,
@@ -233,6 +244,8 @@ export interface UseGameRoomOptions {
 export interface UseGameRoomResult {
   /** Connection status */
   connectionStatus: ConnectionStatus;
+  /** Timestamp when disconnection occurred (for reconnection countdown) */
+  disconnectedAt: number | null;
   /** Room state */
   room: GameRoomState;
   /** Join the room */
@@ -391,7 +404,7 @@ export function useGameRoom(options: UseGameRoomOptions): UseGameRoomResult {
   );
 
   // Set up socket connection
-  const { status: connectionStatus, send } = usePartySocket({
+  const { status: connectionStatus, disconnectedAt, send } = usePartySocket({
     roomCode,
     onMessage: handleMessage,
     autoConnect: true,
@@ -506,6 +519,7 @@ export function useGameRoom(options: UseGameRoomOptions): UseGameRoomResult {
 
   return {
     connectionStatus,
+    disconnectedAt,
     room,
     join,
     leave,

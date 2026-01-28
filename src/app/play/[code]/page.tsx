@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { usePlayerIdentity } from "@/lib/player/identity";
 import { useGameRoom } from "@/lib/party/hooks";
 import { Lobby } from "@/components/Lobby";
+import { ConnectionOverlay } from "@/components/ConnectionOverlay";
 
 /**
  * Game room page.
@@ -58,15 +59,16 @@ function GameRoom({ roomCode, playerId, displayName }: GameRoomProps) {
 
   const {
     connectionStatus,
+    disconnectedAt,
     room,
     leave,
-    setName,
+    setName: _setName,
     configureGame,
     startGame,
     addAI,
     removeAI,
     kickPlayer,
-    playAction,
+    playAction: _playAction,
     clearError,
   } = useGameRoom({
     roomCode,
@@ -80,32 +82,21 @@ function GameRoom({ roomCode, playerId, displayName }: GameRoomProps) {
     router.push("/lobby");
   };
 
-  // Show connection status while connecting
-  if (connectionStatus === "connecting" || connectionStatus === "reconnecting") {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-gradient-to-br from-gray-900 to-gray-800">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-white/20 border-t-white" />
-        <div className="text-white/60">
-          {connectionStatus === "reconnecting" ? "Reconnecting..." : "Connecting..."}
-        </div>
-      </div>
-    );
-  }
+  // Show connection overlay for connection issues (but not during initial connect before joining)
+  const showConnectionOverlay =
+    connectionStatus === "connecting" ||
+    connectionStatus === "reconnecting" ||
+    connectionStatus === "error" ||
+    connectionStatus === "disconnected";
 
-  // Show error state
-  if (connectionStatus === "error" || connectionStatus === "disconnected") {
+  // For initial connection before we have any room data, show full-screen overlay
+  if (showConnectionOverlay && !room.myPlayerId) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-gradient-to-br from-gray-900 to-gray-800">
-        <div className="text-xl text-red-400">Connection Failed</div>
-        <p className="max-w-md text-center text-white/60">
-          Could not connect to the game server. Please check your connection and try again.
-        </p>
-        <button
-          onClick={() => router.push("/lobby")}
-          className="rounded-lg bg-gray-700 px-6 py-3 font-medium text-white transition-all hover:bg-gray-600"
-        >
-          Back to Lobby
-        </button>
+      <div className="flex min-h-screen flex-col bg-gradient-to-br from-gray-900 to-gray-800">
+        <ConnectionOverlay
+          status={connectionStatus}
+          disconnectedAt={disconnectedAt ?? undefined}
+        />
       </div>
     );
   }
@@ -113,21 +104,29 @@ function GameRoom({ roomCode, playerId, displayName }: GameRoomProps) {
   // Show lobby while waiting for game to start
   if (room.status === "lobby") {
     return (
-      <Lobby
-        code={room.code || roomCode}
-        players={room.players}
-        myPlayerId={room.myPlayerId}
-        isHost={room.isHost}
-        config={room.config}
-        error={room.error}
-        onConfigureGame={configureGame}
-        onStartGame={startGame}
-        onAddAI={addAI}
-        onRemoveAI={removeAI}
-        onKickPlayer={kickPlayer}
-        onLeave={handleLeave}
-        onClearError={clearError}
-      />
+      <>
+        <Lobby
+          code={room.code || roomCode}
+          players={room.players}
+          myPlayerId={room.myPlayerId}
+          isHost={room.isHost}
+          config={room.config}
+          error={room.error}
+          onConfigureGame={configureGame}
+          onStartGame={startGame}
+          onAddAI={addAI}
+          onRemoveAI={removeAI}
+          onKickPlayer={kickPlayer}
+          onLeave={handleLeave}
+          onClearError={clearError}
+        />
+        {showConnectionOverlay && (
+          <ConnectionOverlay
+            status={connectionStatus}
+            disconnectedAt={disconnectedAt ?? undefined}
+          />
+        )}
+      </>
     );
   }
 
@@ -136,21 +135,29 @@ function GameRoom({ roomCode, playerId, displayName }: GameRoomProps) {
     // TODO: Integrate with multiplayer game board
     // For now, show a placeholder
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-gradient-to-br from-gray-900 to-gray-800">
-        <div className="text-2xl font-bold text-white">Game In Progress</div>
-        <div className="text-white/60">
-          Multiplayer game view coming soon...
+      <>
+        <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-gradient-to-br from-gray-900 to-gray-800">
+          <div className="text-2xl font-bold text-white">Game In Progress</div>
+          <div className="text-white/60">
+            Multiplayer game view coming soon...
+          </div>
+          <div className="rounded-lg bg-gray-800 p-4 text-sm text-white/60">
+            <pre>{JSON.stringify(room.gameState, null, 2).slice(0, 500)}...</pre>
+          </div>
+          <button
+            onClick={handleLeave}
+            className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white transition-all hover:bg-red-500"
+          >
+            Leave Game
+          </button>
         </div>
-        <div className="rounded-lg bg-gray-800 p-4 text-sm text-white/60">
-          <pre>{JSON.stringify(room.gameState, null, 2).slice(0, 500)}...</pre>
-        </div>
-        <button
-          onClick={handleLeave}
-          className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white transition-all hover:bg-red-500"
-        >
-          Leave Game
-        </button>
-      </div>
+        {showConnectionOverlay && (
+          <ConnectionOverlay
+            status={connectionStatus}
+            disconnectedAt={disconnectedAt ?? undefined}
+          />
+        )}
+      </>
     );
   }
 

@@ -66,7 +66,16 @@ interface RoomPlayer {
   joinedAt: number;
   // Maps to game engine player index when game is active
   gameIndex?: number;
+  // Disconnection tracking for reconnection grace period
+  disconnectedAt?: number;
+  // Whether this player was originally human but taken over by AI
+  aiTakeover?: boolean;
 }
+
+/**
+ * Reconnection grace period in milliseconds (30 seconds)
+ */
+const RECONNECTION_GRACE_PERIOD_MS = 30 * 1000;
 
 /**
  * Full room state
@@ -138,10 +147,55 @@ export default class GameRoom implements Party.Server {
       // In game: mark as disconnected but keep in game
       player.isConnected = false;
       player.connectionId = null;
+      player.disconnectedAt = Date.now();
 
       this.broadcastPlayerUpdate(player.id, { isConnected: false });
 
-      // TODO: Start reconnection timer, AI takeover after timeout
+      // Start reconnection timer - AI takes over after grace period
+      this.startReconnectionTimer(player.id);
+    }
+  }
+
+  /**
+   * Start a timer for player reconnection.
+   * If they don't reconnect within the grace period, AI takes over.
+   */
+  private startReconnectionTimer(playerId: string) {
+    setTimeout(() => {
+      const player = this.state.players.find((p) => p.id === playerId);
+      if (!player) return;
+
+      // Check if still disconnected
+      if (!player.isConnected && !player.aiTakeover) {
+        console.log(`[${this.state.code}] Player ${playerId} timed out, AI takeover`);
+        this.handleAITakeover(playerId);
+      }
+    }, RECONNECTION_GRACE_PERIOD_MS);
+  }
+
+  /**
+   * Convert a disconnected human player to AI control.
+   */
+  private handleAITakeover(playerId: string) {
+    const player = this.state.players.find((p) => p.id === playerId);
+    if (!player || player.isConnected) return;
+
+    // Mark as AI takeover (original player can still reconnect and reclaim)
+    player.aiTakeover = true;
+
+    // Notify other players
+    this.broadcast({
+      type: "player_updated",
+      payload: {
+        playerId,
+        isConnected: false,
+        // Client can use this to show "AI takeover" indicator
+      },
+    });
+
+    // If it's this player's turn, execute AI action
+    if (this.state.status === "playing" && this.state.gameState) {
+      this.checkAndExecuteAITurn();
     }
   }
 
@@ -206,8 +260,14 @@ export default class GameRoom implements Party.Server {
     // Check for reconnection
     const existingPlayer = this.state.players.find((p) => p.id === playerId);
     if (existingPlayer) {
+      const wasAITakeover = existingPlayer.aiTakeover;
+
       existingPlayer.connectionId = conn.id;
       existingPlayer.isConnected = true;
+      existingPlayer.disconnectedAt = undefined;
+      existingPlayer.aiTakeover = false; // Reclaim from AI
+
+      console.log(`[${this.state.code}] Player ${playerId} reconnected${wasAITakeover ? ' (reclaimed from AI)' : ''}`);
 
       this.send(conn, {
         type: "join_success",
@@ -217,6 +277,9 @@ export default class GameRoom implements Party.Server {
           reconnected: true,
         },
       });
+
+      // Send current room state
+      this.sendRoomState(conn);
 
       // Send current game state if in game
       if (this.state.status === "playing" && this.state.gameState) {
@@ -707,7 +770,8 @@ export default class GameRoom implements Party.Server {
     const actingPlayerId = this.state.indexToPlayerId.get(actingIndex);
     const actingPlayer = this.state.players.find((p) => p.id === actingPlayerId);
 
-    if (!actingPlayer?.isAI) return;
+    // Execute AI turn if player is AI or has been taken over by AI
+    if (!actingPlayer?.isAI && !actingPlayer?.aiTakeover) return;
 
     // Execute AI turn with a small delay for realism
     setTimeout(() => this.executeAITurn(actingIndex), 500);
