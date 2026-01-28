@@ -9,3 +9,6 @@ export { GameControls, LastCardButton } from "./GameControls";
 export { StatusBar } from "./StatusBar";
 export { WinScreen } from "./WinScreen";
 export { GameBoard } from "./GameBoard";
+export { HowToPlay } from "./HowToPlay";
+export { MultiplayerSetup } from "./MultiplayerSetup";
+export { Lobby } from "./Lobby";
